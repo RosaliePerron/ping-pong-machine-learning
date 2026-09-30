@@ -4,7 +4,7 @@
 """Train a small TrackNet-style ball detector on labels.csv (from label_ball.py).
 
 Input: previous, current and next frame at 640x360, stacked into 9 channels.
-Output: heatmap of where the ball is in the current frame. Best model -> ball_net.pt.
+Output: heatmap of where the ball is in the current frame. Best model -> models/ball_net.pt.
 
 uv run train_ball.py [--epochs 150]
 """
@@ -167,9 +167,9 @@ def main():
             mark = ""
             if f1 > best:
                 best, mark = f1, "  <- saved"
-                torch.save(model.state_dict(), "ball_net.pt")
+                torch.save(model.state_dict(), "models/ball_net.pt")
             print(f"  val precision {prec:.2f}  recall {rec:.2f}  F1 {f1:.2f}{mark}", flush=True)
-    print(f"best val F1 {best:.2f} -> ball_net.pt")
+    print(f"best val F1 {best:.2f} -> models/ball_net.pt")
 
 
 def _selfcheck():
