@@ -4,6 +4,7 @@
 """Click the ball in sampled frames -> labels.csv, training data for a ball detector (TrackNet).
 
 uv run label_ball.py 1912.mp4 1913.mp4 1914.mp4 [--runs 40 --run-len 10]
+uv run label_ball.py 1902.mp4 --from-run runs/model_1902   # frames where the model lost the ball
 
 Left click: ball is here.  n or right click: ball not visible.  b: back one frame.  q: quit.
 Every label is saved immediately; rerun the same command to resume where you stopped.
@@ -36,6 +37,34 @@ def plan(videos, runs, run_len, seed=0):
     return items
 
 
+def hard_frames(video, run_dir, per_gap=3, max_gap=45):
+    """Frames from a ball_speed.py run where the model likely failed, as (video, frame).
+
+    - first frames after each track ends when the next one starts within max_gap frames
+      (ball lost mid-rally),
+    - frames around suspicious bounce pairs (too short, too fast, or too slow).
+    """
+    spans = {}
+    with open(os.path.join(run_dir, "track.csv"), newline="") as fh:
+        for r in csv.DictReader(fh):
+            f = int(r["frame"])
+            s, e = spans.get(r["track"], (f, f))
+            spans[r["track"]] = (min(s, f), max(e, f))
+    spans = sorted(spans.values())
+    frames = []
+    for (_, end), (start, _) in zip(spans, spans[1:]):
+        if 1 < start - end <= max_gap:
+            frames += range(end + 1, min(end + 1 + per_gap, start))
+    fps = cv2.VideoCapture(video).get(cv2.CAP_PROP_FPS)
+    with open(os.path.join(run_dir, "speeds.csv"), newline="") as fh:
+        for r in csv.DictReader(fh):
+            if float(r["dist_m"]) < 1 or float(r["speed_kmh"]) > 25 or float(r["dt_s"]) > 1:
+                f0, f1 = round(float(r["t_s"]) * fps), round((float(r["t_s"]) + float(r["dt_s"])) * fps)
+                frames += range(f0 - 2, f0 + 3)  # the first bounce
+                frames += range((f0 + f1) // 2 - 2, (f0 + f1) // 2 + 3)  # a missed bounce would be mid-way
+    return [(video, f) for f in sorted(set(frames)) if f >= 0]
+
+
 def load(path):
     if not os.path.exists(path):
         return {}
@@ -58,9 +87,14 @@ def main():
     ap.add_argument("videos", nargs="+")
     ap.add_argument("--runs", type=int, default=40)
     ap.add_argument("--run-len", type=int, default=10)
+    ap.add_argument("--from-run", help="ball_speed.py output folder: label where the model struggled (one video only)")
     a = ap.parse_args()
 
-    items = plan(a.videos, a.runs, a.run_len)
+    if a.from_run:
+        assert len(a.videos) == 1, "--from-run takes the one video that run was made from"
+        items = hard_frames(a.videos[0], a.from_run)
+    else:
+        items = plan(a.videos, a.runs, a.run_len)
     labels = load(OUT)
     caps = {v: cv2.VideoCapture(v) for v in a.videos}
     state = {"i": next((k for k, it in enumerate(items) if it not in labels), len(items))}
@@ -128,6 +162,13 @@ def _selfcheck():
     labels = {("a.mp4", 3): (1, 12.3, 45.6), ("a.mp4", 4): (0, None, None)}
     save(path, labels)
     assert load(path) == labels, load(path)
+    # Two tracks with a 6-frame gap -> the first 3 lost frames; a far-apart pair of tracks -> nothing.
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "track.csv"), "w") as fh:
+        fh.write("track,frame,t_s,x_px,y_px\n0,10,0,0,0\n0,20,0,0,0\n1,27,0,0,0\n1,30,0,0,0\n2,500,0,0,0\n")
+    with open(os.path.join(d, "speeds.csv"), "w") as fh:
+        fh.write("track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n")
+    assert hard_frames("nonexistent.mp4", d) == [("nonexistent.mp4", f) for f in (21, 22, 23)]
 
 
 if __name__ == "__main__":
