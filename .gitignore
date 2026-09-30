@@ -16,3 +16,5 @@
 .claude/worktrees/
 
 __pycache__/
+__pycache__/**
+*.pyc
