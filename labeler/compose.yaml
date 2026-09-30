@@ -1,0 +1,6 @@
+services:
+  labeler:
+    build: .
+    ports: ["8000:8000"]
+    volumes: ["./data:/data"]  # data/videos/*.mp4 + data/labels.db
+    restart: unless-stopped
