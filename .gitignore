@@ -11,3 +11,6 @@
 *.mpeg
 *.3gp
 *.ts
+
+# Claude Code worktrees: separate checkouts, never part of this repo
+.claude/worktrees/
