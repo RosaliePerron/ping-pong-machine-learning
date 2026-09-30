@@ -5,6 +5,7 @@
 
 uv run label_ball.py 1912.mp4 1913.mp4 1914.mp4 [--runs 40 --run-len 10]
 uv run label_ball.py 1902.mp4 --from-run runs/model_1902   # frames where the model lost the ball
+uv run label_ball.py 1936.mp4 --false-positives runs/v2_1936   # detections that are probably not the ball
 
 Left click: ball is here.  n or right click: ball not visible.  b: back one frame.  q: quit.
 Every label is saved immediately; rerun the same command to resume where you stopped.
@@ -65,6 +66,56 @@ def hard_frames(video, run_dir, per_gap=3, max_gap=45):
     return [(video, f) for f in sorted(set(frames)) if f >= 0]
 
 
+def suspect_detections(video, run_dir, max_frames=150, spacing=5, borderline=0.7, near_px=20):
+    """Frames where the model probably saw something that is NOT the ball -> (items, guesses, counts).
+
+    Needs detections.csv and rejected.csv from a ball_speed.py --model run. Groups, sampled in turn:
+    - untracked: detections the tracker didn't keep (lone hits, too-short tracks, static clutter),
+    - borderline: tracked detections the model was barely sure of (score <= borderline),
+    - rejected: bounce candidates the physics checks threw out (often one bad detection).
+    Picked frames are at least `spacing` apart so the set isn't near-duplicates.
+    guesses maps (video, frame) -> the model's (x, y), shown so a right guess costs one key.
+    """
+    def rows(name):
+        with open(os.path.join(run_dir, name), newline="") as fh:
+            return list(csv.DictReader(fh))
+
+    tracked = {}
+    for r in rows("track.csv"):
+        tracked.setdefault(int(r["frame"]), []).append((float(r["x_px"]), float(r["y_px"])))
+
+    def is_tracked(f, x, y):
+        return any(abs(x - tx) <= near_px and abs(y - ty) <= near_px for tx, ty in tracked.get(f, []))
+
+    groups = {"untracked": [], "borderline": [], "rejected": []}
+    for r in rows("detections.csv"):
+        f, x, y, s = int(r["frame"]), float(r["x_px"]), float(r["y_px"]), float(r["score"])
+        if not is_tracked(f, x, y):
+            groups["untracked"].append((f, x, y))
+        elif s <= borderline:
+            groups["borderline"].append((f, x, y))
+    groups["rejected"] = [(int(r["frame"]), float(r["x_px"]), float(r["y_px"])) for r in rows("rejected.csv")]
+
+    rng = random.Random(0)
+    for g in groups.values():
+        rng.shuffle(g)
+    picked, counts = {}, dict.fromkeys(groups, 0)
+    queues = {k: iter(v) for k, v in groups.items()}
+    while len(picked) < max_frames and queues:
+        for k in list(queues):
+            for f, x, y in queues[k]:
+                if all(abs(f - p) >= spacing for p in picked):
+                    picked[f] = (x, y)
+                    counts[k] += 1
+                    break
+            else:
+                del queues[k]  # group used up
+            if len(picked) >= max_frames:
+                break
+    items = [(video, f) for f in sorted(picked)]
+    return items, {(video, f): picked[f] for f in picked}, counts
+
+
 def load(path):
     if not os.path.exists(path):
         return {}
@@ -88,11 +139,19 @@ def main():
     ap.add_argument("--runs", type=int, default=40)
     ap.add_argument("--run-len", type=int, default=10)
     ap.add_argument("--from-run", help="ball_speed.py output folder: label where the model struggled (one video only)")
+    ap.add_argument("--false-positives", metavar="RUN_DIR",
+                    help="ball_speed.py --model output folder: check detections that are probably not the ball")
+    ap.add_argument("--max-frames", type=int, default=150, help="with --false-positives")
     a = ap.parse_args()
 
+    guesses = {}
+    if a.from_run or a.false_positives:
+        assert len(a.videos) == 1, "--from-run / --false-positives take the one video that run was made from"
     if a.from_run:
-        assert len(a.videos) == 1, "--from-run takes the one video that run was made from"
         items = hard_frames(a.videos[0], a.from_run)
+    elif a.false_positives:
+        items, guesses, counts = suspect_detections(a.videos[0], a.false_positives, a.max_frames)
+        print(f"{len(items)} frames to check: " + ", ".join(f"{n} {k}" for k, n in counts.items()))
     else:
         items = plan(a.videos, a.runs, a.run_len)
     labels = load(OUT)
@@ -105,6 +164,7 @@ def main():
     img = ax.imshow([[0]])
     prev_mark, = ax.plot([], [], "c+", ms=14, mew=1)  # ball in previous frame, as a hint
     cur_mark, = ax.plot([], [], "rx", ms=10, mew=2)  # existing label for this frame
+    guess_mark, = ax.plot([], [], "o", ms=22, mew=2, mfc="none", mec="yellow")  # model's guess (--false-positives)
 
     def show():
         i = state["i"]
@@ -124,9 +184,12 @@ def main():
         for mark, key in ((prev_mark, (v, f - 1)), (cur_mark, (v, f))):
             lab = labels.get(key)
             mark.set_data(*(([lab[1]], [lab[2]]) if lab and lab[0] else ([], [])))
+        g = guesses.get((v, f))
+        guess_mark.set_data(*(([g[0]], [g[1]]) if g else ([], [])))
         done = sum(it in labels for it in items)
-        ax.set_title(f"{done}/{len(items)} labelled   {v} frame {f}   "
-                     "click = ball   n / right click = not visible   b = back   q = quit", fontsize=9)
+        keys = ("yellow circle = model's guess   Enter = guess is the ball   n = NOT the ball / no ball   "
+                "click = ball is elsewhere" if g else "click = ball   n / right click = not visible")
+        ax.set_title(f"{done}/{len(items)} labelled   {v} frame {f}   {keys}   b = back   q = quit", fontsize=9)
         fig.canvas.draw_idle()
 
     def label(vis, x=None, y=None):
@@ -146,6 +209,8 @@ def main():
     def on_key(e):
         if e.key == "n":
             label(0)
+        elif e.key == "enter" and items[state["i"]] in guesses:
+            label(1, *guesses[items[state["i"]]])
         elif e.key == "b":
             state["i"] = max(0, state["i"] - 1)
             show()
@@ -169,6 +234,18 @@ def _selfcheck():
     with open(os.path.join(d, "speeds.csv"), "w") as fh:
         fh.write("track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n")
     assert hard_frames("nonexistent.mp4", d) == [("nonexistent.mp4", f) for f in (21, 22, 23)]
+    # Suspect detections: a sure tracked hit is skipped; a barely-sure tracked hit, a lone untracked hit
+    # and a rejected bounce candidate are each picked once; a second lone hit 2 frames later is too close.
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "track.csv"), "w") as fh:
+        fh.write("track,frame,t_s,x_px,y_px\n" + "".join(f"0,{f},0,100,100\n" for f in range(10, 15)))
+    with open(os.path.join(d, "detections.csv"), "w") as fh:
+        fh.write("frame,x_px,y_px,score\n10,100,100,0.95\n12,101,99,0.6\n50,500,300,0.9\n52,505,300,0.9\n")
+    with open(os.path.join(d, "rejected.csv"), "w") as fh:
+        fh.write("frame,x_px,y_px,reason\n30,200,200,paddle hit\n")
+    items, guesses, counts = suspect_detections("v.mp4", d)
+    assert [f for _, f in items] == [12, 30, 50], items
+    assert guesses[("v.mp4", 50)] == (500.0, 300.0) and counts == {"untracked": 1, "borderline": 1, "rejected": 1}, (guesses, counts)
 
 
 if __name__ == "__main__":

@@ -286,7 +286,14 @@ def main():
     else:
         frames = read_frames(cap)
         detections = model_detections(frames, a.model) if a.model else color_detections(frames)
-        frames_dets = drop_static([dets for _, dets in detections])
+        frames_dets = [dets for _, dets in detections]
+        # Every raw detection, before clutter filtering and tracking: label_ball.py --false-positives
+        # samples the ones that got thrown away. score is the model's confidence (colour mode: blob area).
+        with open("detections.csv", "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["frame", "x_px", "y_px", "score"])
+            w.writerows([f, round(x, 1), round(y, 1), round(float(s), 3)] for f, dets in enumerate(frames_dets) for x, y, s in dets)
+        frames_dets = drop_static(frames_dets)
         tracks = track(frames_dets)
     with open("track.csv", "w", newline="") as fh:
         w = csv.writer(fh)
@@ -311,6 +318,11 @@ def main():
                 pairs.append((f1, x1, y1, kmh))
                 w.writerow([ti, round(f0 / fps, 2), f"{x0:.2f},{y0:.2f}", f"{x1:.2f},{y1:.2f}",
                             round(dist, 2), round(dt, 3), round(kmh, 1)])
+
+    with open("rejected.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["frame", "x_px", "y_px", "reason"])
+        w.writerows([f, round(x, 1), round(y, 1), why] for f, x, y, why in rejected)
 
     n_det = sum(bool(d) for d in frames_dets)
     print(f"{len(frames_dets)} frames, ball candidates in {n_det}, {len(tracks)} tracks, "
