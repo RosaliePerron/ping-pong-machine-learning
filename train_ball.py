@@ -87,11 +87,20 @@ def load_data(path):
         for g in sorted({min(max(g, 0), n - 1) for r in rows if r[0] == v for g in (r[1] - 1, r[1], r[1] + 1)}):
             if g != last:  # seek only on jumps, read sequentially inside a run (seeking is slow)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, g)
-            ok, frames[(v, g)] = cap.read()
+            ok, frame = cap.read()
             assert ok, (v, g)
+            # Shrink on read: isolated labels need their own prev/next frame, so ~2.5 frames per label;
+            # at full size 2000 labels no longer fit in RAM, at model size they're 4x smaller.
+            frames[(v, g)] = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
             last = g + 1
-    x = np.stack([to_input([frames.get((v, g), frames[(v, f)]) for g in (f - 1, f, f + 1)]) for v, f, *_ in rows])
-    y = np.stack([heatmap(vis, px, py, *scale[v]) for v, f, vis, px, py in rows])
+    # Fill preallocated arrays: np.stack of a list briefly holds every sample twice.
+    x = np.empty((len(rows), 9, H, W), np.uint8)
+    for i, (v, f, *_) in enumerate(rows):
+        x[i] = to_input([frames.get((v, g), frames[(v, f)]) for g in (f - 1, f, f + 1)])
+    del frames
+    y = np.empty((len(rows), H, W), np.float16)  # targets are in [0, 1]; half precision is plenty
+    for i, (v, f, vis, px, py) in enumerate(rows):
+        y[i] = heatmap(vis, px, py, *scale[v])
     # Run id: consecutive frames are near-duplicates, so split train/val by run, never by frame.
     run, runs = -1, []
     for i, (v, f, *_) in enumerate(rows):
@@ -144,7 +153,7 @@ def main():
         for b in range(0, len(tr), a.batch):
             idx = tr[b : b + a.batch]
             xb = torch.from_numpy(x[idx]).to(dev).float() / 255
-            yb = torch.from_numpy(y[idx]).to(dev)
+            yb = torch.from_numpy(y[idx]).to(dev).float()
             if random.random() < 0.5:  # mirror
                 xb, yb = xb.flip(-1), yb.flip(-1)
             # Lighting jitter, same for all 3 frames of a sample: the three videos are lit differently.
