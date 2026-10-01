@@ -2,13 +2,13 @@
 import csv
 import io
 import os
-import random
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 import cv2
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -16,6 +16,10 @@ DATA = Path(os.environ.get("DATA_DIR", "/data"))
 VIDEOS = DATA / "videos"
 VIDEOS.mkdir(parents=True, exist_ok=True)
 EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+REPO = Path(os.environ.get("REPO_DIR", "/repo"))
+RUNS = REPO / "runs"
+sys.path.insert(0, str(REPO))
+import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -79,15 +83,52 @@ def video_labels(name: str):
     return {f: {"visible": v, "x": x, "y": y, "labeler": who} for f, v, x, y, who in rows}
 
 
-@app.get("/api/videos/{name}/random")
-def random_unlabeled(name: str):
-    """A random unlabelled frame, so several people on one video don't collide."""
-    n = frame_count(video_path(name))
-    done = {f for (f,) in db.execute("SELECT frame FROM labels WHERE video=?", (name,))}
-    left = [f for f in range(n) if f not in done]
-    if not left:
-        raise HTTPException(404, "every frame is labelled")
-    return {"frame": random.choice(left)}
+# files each label_ball.py mode reads from a ball_speed.py run folder
+MODE_FILES = {"from-run": {"track.csv", "speeds.csv"},
+              "false-positives": {"track.csv", "detections.csv", "rejected.csv"}}
+
+
+def run_modes(d: Path) -> list[str]:
+    files = {f.name for f in d.iterdir()}
+    return [m for m, need in MODE_FILES.items() if need <= files]
+
+
+@app.get("/api/runs")
+def list_runs():
+    dirs = sorted(d for d in RUNS.iterdir() if d.is_dir()) if RUNS.is_dir() else []
+    return [{"name": d.name, "modes": run_modes(d)} for d in dirs]
+
+
+@app.get("/api/queue")
+def queue(mode: str, videos: list[str] = Query(), run: str = "",
+          runs: int = Query(40, ge=1, le=1000), run_len: int = Query(10, ge=1, le=1000),
+          max_frames: int = Query(150, ge=1, le=5000)):
+    """Frames to label, picked exactly like `label_ball.py` with the same arguments.
+
+    plan: label_ball.py VIDEOS --runs --run-len (video order matters, it seeds the pick)
+    from-run: label_ball.py VIDEO --from-run runs/RUN
+    false-positives: label_ball.py VIDEO --false-positives runs/RUN --max-frames
+    """
+    paths = [str(video_path(v)) for v in videos]
+    guesses, counts = {}, None
+    if mode == "plan":
+        if min(frame_count(Path(p)) for p in paths) <= run_len:
+            raise HTTPException(400, "run_len is longer than a video")
+        items = label_ball.plan(paths, runs, run_len)
+    elif mode in MODE_FILES:
+        if len(paths) != 1:
+            raise HTTPException(400, f"{mode} takes the one video that run was made from")
+        run_dir = RUNS / run
+        if run_dir.parent != RUNS or not run_dir.is_dir() or mode not in run_modes(run_dir):
+            raise HTTPException(404, f"no run folder {run!r} with {sorted(MODE_FILES[mode])}")
+        if mode == "from-run":
+            items = label_ball.hard_frames(paths[0], str(run_dir))
+        else:
+            items, guesses, counts = label_ball.suspect_detections(paths[0], str(run_dir), max_frames)
+    else:
+        raise HTTPException(400, "mode is plan, from-run or false-positives")
+    return {"items": [{"video": Path(v).name, "frame": f, "guess": guesses.get((v, f))} for v, f in items],
+            "counts": counts}
 
 
 class Label(BaseModel):

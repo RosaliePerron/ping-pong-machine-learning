@@ -9,12 +9,16 @@
   body { margin: 0; padding: 16px; }
   header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
   h1 { font-size: 1.2rem; margin: 0; }
+  h2 { font-size: 1rem; }
   table { border-collapse: collapse; }
   td, th { padding: 4px 12px; text-align: left; }
+  fieldset { margin-bottom: 8px; }
   #stage { position: relative; display: inline-block; max-width: 100%; }
   #frame { display: block; max-width: 100%; cursor: crosshair; }
-  #mark { position: absolute; width: 16px; height: 16px; margin: -9px 0 0 -9px; border: 2px solid red;
-          border-radius: 50%; pointer-events: none; display: none; }
+  .mark { position: absolute; pointer-events: none; display: none; transform: translate(-50%, -50%); }
+  #cur { width: 14px; height: 14px; border: 2px solid red; border-radius: 50%; }
+  #prev { color: cyan; font: 24px monospace; line-height: 1; }
+  #guess { width: 40px; height: 40px; border: 2px solid yellow; border-radius: 50%; }
   #status { font-variant-numeric: tabular-nums; }
   .hidden { display: none; }
   kbd { border: 1px solid; border-radius: 3px; padding: 0 4px; }
@@ -22,7 +26,7 @@
 </head>
 <body>
 <header>
-  <h1><a href="#" onclick="showList(); return false">Frame Labeler</a></h1>
+  <h1><a href="#">Frame Labeler</a></h1>
   <label>Your name <input id="who" size="12"></label>
   <a href="/api/labels.csv">Download labels.csv</a>
 </header>
@@ -32,22 +36,43 @@
     <input type="file" name="file" accept="video/*" required>
     <button>Upload video</button> <span id="upmsg"></span>
   </form>
-  <table><thead><tr><th>Video</th><th>Frames</th><th>Labelled</th></tr></thead><tbody id="videos"></tbody></table>
+
+  <h2>Start labelling</h2>
+  <form id="start">
+    <fieldset>
+      <legend>Frames to label (same choice as label_ball.py)</legend>
+      <label><input type="radio" name="mode" value="plan" checked> Random runs of consecutive frames</label><br>
+      <label><input type="radio" name="mode" value="from-run"> Where the model lost the ball (<code>--from-run</code>)</label><br>
+      <label><input type="radio" name="mode" value="false-positives"> Detections that are probably not the ball (<code>--false-positives</code>)</label>
+    </fieldset>
+    <fieldset id="plan-opts">
+      <label>Runs <input name="runs" type="number" min="1" value="40" style="width: 5em"></label>
+      <label>Frames per run <input name="run_len" type="number" min="1" value="10" style="width: 5em"></label>
+    </fieldset>
+    <fieldset id="run-opts" class="hidden">
+      <label>ball_speed.py run <select name="run" id="run"></select></label>
+      <label id="max-opt">Max frames <input name="max_frames" type="number" min="1" value="150" style="width: 5em"></label>
+    </fieldset>
+    <table><thead><tr><th></th><th>Video</th><th>Frames</th><th>Labelled</th></tr></thead><tbody id="videos"></tbody></table>
+    <p><button>Start</button> <span id="startmsg"></span></p>
+  </form>
 </section>
 
 <section id="labeler" class="hidden">
   <p id="status"></p>
-  <p>
-    Click the ball. <kbd>n</kbd> / right click: not visible. <kbd>←</kbd><kbd>→</kbd>: prev/next frame.
-    <kbd>r</kbd>: random unlabelled frame. <kbd>Del</kbd>: clear label.
-    Go to frame <input id="goto" type="number" min="0" style="width: 7em">
-  </p>
-  <div id="stage"><img id="frame" alt="video frame"><div id="mark"></div></div>
+  <p id="keys"></p>
+  <div id="stage">
+    <img id="frame" alt="video frame">
+    <div id="prev" class="mark">+</div><div id="cur" class="mark"></div><div id="guess" class="mark"></div>
+  </div>
 </section>
 
 <script>
 const $ = id => document.getElementById(id);
-let video = null, total = 0, frame = 0, labels = {};
+let items = [], i = 0, labels = {}, counts = null;
+let runs = [];
+const key = (v, f) => `${v}|${f}`;
+const frameUrl = it => `/api/videos/${encodeURIComponent(it.video)}/frames/${it.frame}.jpg`;
 
 $('who').value = (() => { try { return localStorage.who || ''; } catch { return ''; } })();
 $('who').onchange = () => { try { localStorage.who = $('who').value; } catch {} };
@@ -58,18 +83,36 @@ async function api(path, opts) {
   return r.json();
 }
 
+// ---- list / queue setup ----
 async function showList() {
-  video = null;
   $('labeler').classList.add('hidden'); $('list').classList.remove('hidden');
-  const vids = await api('/api/videos');
+  const [vids, rs] = await Promise.all([api('/api/videos'), api('/api/runs')]);
+  runs = rs;
+  const mode = $('start').mode.value, multi = mode === 'plan';
   $('videos').replaceChildren(...vids.map(v => {
     const tr = document.createElement('tr');
-    const a = Object.assign(document.createElement('a'), { href: '#', textContent: v.name });
-    a.onclick = e => { e.preventDefault(); open(v.name, v.frames); };
-    tr.append(...[a, v.frames, v.labeled].map(x => { const td = document.createElement('td'); td.append(x); return td; }));
+    const box = Object.assign(document.createElement('input'),
+      { type: multi ? 'checkbox' : 'radio', name: 'videos', value: v.name });
+    box.onchange = fillRuns;
+    tr.append(...[box, v.name, v.frames, v.labeled].map(x => { const td = document.createElement('td'); td.append(x); return td; }));
     return tr;
   }));
+  fillRuns();
 }
+
+function fillRuns() {
+  const mode = $('start').mode.value;
+  $('plan-opts').classList.toggle('hidden', mode !== 'plan');
+  $('run-opts').classList.toggle('hidden', mode === 'plan');
+  $('max-opt').classList.toggle('hidden', mode !== 'false-positives');
+  // runs are named like v3_1902: show the ones made from the picked video first
+  const stem = ($('start').querySelector('[name=videos]:checked')?.value || '').replace(/\.[^.]+$/, '');
+  const ok = runs.filter(r => r.modes.includes(mode))
+    .sort((a, b) => (b.name.endsWith(stem) && stem ? 1 : 0) - (a.name.endsWith(stem) && stem ? 1 : 0));
+  $('run').replaceChildren(...ok.map(r => new Option(r.name, r.name)));
+}
+
+for (const r of document.querySelectorAll('[name=mode]')) r.onchange = showList;
 
 $('upload').onsubmit = async e => {
   e.preventDefault();
@@ -80,47 +123,83 @@ $('upload').onsubmit = async e => {
   } catch (err) { $('upmsg').textContent = err.message; }
 };
 
-async function open(name, frames) {
-  video = name; total = frames;
-  labels = await api(`/api/videos/${encodeURIComponent(name)}/labels`);
-  $('list').classList.add('hidden'); $('labeler').classList.remove('hidden');
-  await randomFrame();
+$('start').onsubmit = e => {
+  e.preventDefault();
+  const f = e.target, mode = f.mode.value, q = new URLSearchParams({ mode });
+  const vids = [...f.querySelectorAll('[name=videos]:checked')].map(b => b.value);
+  if (!vids.length) { $('startmsg').textContent = 'pick a video'; return; }
+  vids.forEach(v => q.append('videos', v));
+  if (mode === 'plan') { q.set('runs', f.runs.value); q.set('run_len', f.run_len.value); }
+  else { q.set('run', f.run.value); if (mode === 'false-positives') q.set('max_frames', f.max_frames.value); }
+  location.hash = q;  // shareable: same link = same frames for everyone
+};
+
+// ---- labelling ----
+async function refreshLabels() {
+  const vids = [...new Set(items.map(it => it.video))];
+  const all = await Promise.all(vids.map(v => api(`/api/videos/${encodeURIComponent(v)}/labels`)));
+  labels = {};
+  vids.forEach((v, n) => { for (const [f, l] of Object.entries(all[n])) labels[key(v, f)] = l; });
 }
 
-function show(f) {
-  frame = Math.max(0, Math.min(total - 1, f));
-  $('frame').src = `/api/videos/${encodeURIComponent(video)}/frames/${frame}.jpg`;
-  $('goto').value = frame;
+async function openQueue(q) {
+  $('list').classList.add('hidden'); $('labeler').classList.remove('hidden');
+  $('status').textContent = 'picking frames…'; $('keys').textContent = '';
+  try { ({ items, counts } = await api(`/api/queue?${q}`)); }
+  catch (err) { $('status').textContent = err.message; return; }
+  await refreshLabels();
+  show(items.findIndex(it => !labels[key(it.video, it.frame)]));  // resume where anyone stopped
+}
+
+function show(n) {
+  i = n < 0 ? items.length : Math.max(0, Math.min(items.length, n));
+  if (i < items.length) {
+    $('frame').src = frameUrl(items[i]);
+    if (items[i + 1]) new Image().src = frameUrl(items[i + 1]);  // warm the cache
+  }
   render();
-  // warm the browser cache for the next frame
-  new Image().src = `/api/videos/${encodeURIComponent(video)}/frames/${frame + 1}.jpg`;
+}
+
+function place(el, xy) {
+  const img = $('frame'), s = img.clientWidth / img.naturalWidth;
+  if (!xy || !img.naturalWidth) { el.style.display = 'none'; return; }
+  el.style.left = xy[0] * s + 'px'; el.style.top = xy[1] * s + 'px'; el.style.display = 'block';
 }
 
 function render() {
-  const l = labels[frame], img = $('frame'), mark = $('mark');
-  const state = !l ? 'unlabelled' : l.visible ? `ball at ${l.x.toFixed(0)}, ${l.y.toFixed(0)}` : 'not visible';
-  $('status').textContent = `${video} · frame ${frame} / ${total - 1} · ${state}` +
-    (l?.labeler ? ` (by ${l.labeler})` : '') + ` · ${Object.keys(labels).length} labelled`;
-  if (l?.visible && img.naturalWidth) {
-    const s = img.clientWidth / img.naturalWidth;
-    mark.style.left = l.x * s + 'px'; mark.style.top = l.y * s + 'px'; mark.style.display = 'block';
-  } else mark.style.display = 'none';
+  const done = items.filter(it => labels[key(it.video, it.frame)]).length;
+  const extra = counts ? ' · ' + Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(', ') : '';
+  $('frame').classList.toggle('hidden', i >= items.length);
+  if (i >= items.length) {
+    $('status').textContent = `done: ${done}/${items.length} labelled${extra}`;
+    $('keys').innerHTML = '<kbd>b</kbd>: back · <a href="#">pick other frames</a>';
+    for (const el of ['prev', 'cur', 'guess']) $(el).style.display = 'none';
+    return;
+  }
+  const it = items[i], l = labels[key(it.video, it.frame)], p = labels[key(it.video, it.frame - 1)];
+  const state = !l ? '' : (l.visible ? 'ball' : 'not visible') + (l.labeler ? ` by ${l.labeler}` : '');
+  $('status').textContent = `${done}/${items.length} labelled · ${it.video} frame ${it.frame}` +
+    (state ? ` · ${state}` : '') + extra;
+  $('keys').innerHTML = it.guess
+    ? 'yellow circle = model\'s guess · <kbd>Enter</kbd>: guess is the ball · <kbd>n</kbd>: NOT the ball / no ball · click: ball is elsewhere · <kbd>b</kbd>: back'
+    : 'click: ball · <kbd>n</kbd> / right click: not visible · <kbd>b</kbd>: back · cyan + = ball in previous frame';
+  place($('cur'), l?.visible && [l.x, l.y]);
+  place($('prev'), p?.visible && [p.x, p.y]);
+  place($('guess'), it.guess);
 }
 $('frame').onload = render;
 addEventListener('resize', render);
 
 async function save(label) {
-  const f = frame;
+  if (i >= items.length) return;
+  const it = items[i];
   label.labeler = $('who').value;
-  await api(`/api/videos/${encodeURIComponent(video)}/labels/${f}`,
+  await api(`/api/videos/${encodeURIComponent(it.video)}/labels/${it.frame}`,
     { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(label) });
-  labels[f] = label;
-  show(f + 1);
-}
-
-async function randomFrame() {
-  try { show((await api(`/api/videos/${encodeURIComponent(video)}/random`)).frame); }
-  catch (err) { show(0); $('status').textContent += ` · ${err.message}`; }
+  // ponytail: refetch so frames others labelled meanwhile get skipped; two people can still race on one frame
+  await refreshLabels();
+  const next = items.findIndex((x, n) => n > i && !labels[key(x.video, x.frame)]);
+  show(next < 0 ? items.length : next);
 }
 
 $('frame').onclick = e => {
@@ -128,21 +207,19 @@ $('frame').onclick = e => {
   save({ visible: true, x: e.offsetX * s, y: e.offsetY * s });
 };
 $('frame').oncontextmenu = e => { e.preventDefault(); save({ visible: false }); };
-$('goto').onchange = e => show(+e.target.value);
 
-addEventListener('keydown', async e => {
-  if (!video || e.target.tagName === 'INPUT') return;
-  if (e.key === 'ArrowRight') show(frame + 1);
-  else if (e.key === 'ArrowLeft') show(frame - 1);
-  else if (e.key === 'n') save({ visible: false });
-  else if (e.key === 'r') randomFrame();
-  else if (e.key === 'Delete' || e.key === 'Backspace') {
-    await api(`/api/videos/${encodeURIComponent(video)}/labels/${frame}`, { method: 'DELETE' });
-    delete labels[frame]; render();
-  }
+addEventListener('keydown', e => {
+  if ($('labeler').classList.contains('hidden') || e.target.tagName === 'INPUT') return;
+  const g = items[i]?.guess;
+  if (e.key === 'n') save({ visible: false });
+  else if (e.key === 'Enter' && g) save({ visible: true, x: g[0], y: g[1] });
+  else if (e.key === 'b' || e.key === 'ArrowLeft') show(i - 1 < 0 ? 0 : i - 1);
+  else if (e.key === 'ArrowRight') show(i + 1);
 });
 
-showList();
+const route = () => location.hash.length > 1 ? openQueue(location.hash.slice(1)) : showList();
+addEventListener('hashchange', route);
+route();
 </script>
 </body>
 </html>

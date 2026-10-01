@@ -1,11 +1,23 @@
-"""uv run --with-requirements requirements.txt --with httpx python test_app.py"""
+"""uv run --with-requirements requirements.txt --with httpx --with numpy python test_app.py"""
 import os
+import shutil
 import tempfile
 
 import cv2
 import numpy as np
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ["DATA_DIR"] = tempfile.mkdtemp()
+os.environ["REPO_DIR"] = repo = tempfile.mkdtemp()
+shutil.copy(os.path.join(HERE, "..", "label_ball.py"), repo)
+run = os.path.join(repo, "runs", "v1_my_clip")
+os.makedirs(run)
+for name, text in {"track.csv": "track,frame,t_s,x_px,y_px\n0,1,0,9,9\n1,6,0,9,9\n",
+                   "speeds.csv": "track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n",
+                   "detections.csv": "frame,x_px,y_px,score\n1,9,9,0.5\n",
+                   "rejected.csv": "frame,x_px,y_px,reason\n8,30,20,x\n"}.items():
+    with open(os.path.join(run, name), "w") as fh:
+        fh.write(text)
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
@@ -30,7 +42,22 @@ assert c.put("/api/videos/my_clip.mp4/labels/3", json={"visible": False, "x": 1,
 assert c.put("/api/videos/my_clip.mp4/labels/4", json={"visible": True}).status_code == 400
 assert c.get("/api/labels.csv").text.splitlines() == [
     "video,frame,visible,x,y", "videos/my_clip.mp4,2,1,10.3,5.0", "videos/my_clip.mp4,3,0,,"]
-assert c.get("/api/videos/my_clip.mp4/random").json()["frame"] not in (2, 3)
+
+# queues pick the same frames as label_ball.py
+import label_ball  # noqa: E402
+
+clip = os.path.join(os.environ["DATA_DIR"], "videos", "my_clip.mp4")
+q = c.get("/api/queue", params={"mode": "plan", "videos": "my_clip.mp4", "runs": 3, "run_len": 4}).json()
+assert [it["frame"] for it in q["items"]] == [f for _, f in label_ball.plan([clip], 3, 4)]
+assert c.get("/api/queue", params={"mode": "plan", "videos": "my_clip.mp4", "run_len": 10}).status_code == 400
+assert c.get("/api/runs").json() == [{"name": "v1_my_clip", "modes": ["from-run", "false-positives"]}]
+q = c.get("/api/queue", params={"mode": "from-run", "videos": "my_clip.mp4", "run": "v1_my_clip"}).json()
+assert [it["frame"] for it in q["items"]] == [2, 3, 4], q
+q = c.get("/api/queue", params={"mode": "false-positives", "videos": "my_clip.mp4", "run": "v1_my_clip"}).json()
+assert q["items"] == [{"video": "my_clip.mp4", "frame": 1, "guess": [9.0, 9.0]},
+                      {"video": "my_clip.mp4", "frame": 8, "guess": [30.0, 20.0]}], q
+assert q["counts"] == {"untracked": 0, "borderline": 1, "rejected": 1}
+assert c.get("/api/queue", params={"mode": "from-run", "videos": "my_clip.mp4", "run": ".."}).status_code == 404
 c.delete("/api/videos/my_clip.mp4/labels/2")
 assert list(c.get("/api/videos/my_clip.mp4/labels").json()) == ["3"]
 print("ok")
