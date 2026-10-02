@@ -141,7 +141,7 @@ $('upload').onsubmit = async e => {
 $('start').onsubmit = e => {
   e.preventDefault();
   const f = e.target, mode = f.mode.value, q = new URLSearchParams({ mode });
-  const vids = [...picked].sort();  // sorted like the list: plan's pick depends on video order
+  const vids = [...picked].sort();  // fixed order: plan's pick depends on video order, not on click order
   if (!vids.length) { $('startmsg').textContent = 'pick a video'; return; }
   vids.forEach(v => q.append('videos', v));
   if (mode === 'plan') { q.set('runs', f.runs.value); q.set('run_len', f.run_len.value); }
