@@ -42,10 +42,14 @@ def frame_count(p: Path) -> int:
 
 
 @app.get("/api/videos")
-def list_videos():
+def list_videos(page: int = Query(1, ge=1), per_page: int = Query(25, ge=1, le=200)):
+    """One page of videos; frame counts (opening each file) only for that page, which is what made it slow."""
+    names = sorted((p.name for p in VIDEOS.iterdir() if p.suffix.lower() in EXTS), reverse=True,
+                   key=lambda n: (int(m[0]) if (m := re.match(r"\d+", n)) else -1, n))  # newest number first
     done = dict(db.execute("SELECT video, COUNT(*) FROM labels GROUP BY video").fetchall())
-    return [{"name": p.name, "frames": frame_count(p), "labeled": done.get(p.name, 0)}
-            for p in sorted(VIDEOS.iterdir()) if p.suffix.lower() in EXTS]
+    rows = [{"name": n, "frames": frame_count(VIDEOS / n), "labeled": done.get(n, 0)}
+            for n in names[(page - 1) * per_page:page * per_page]]
+    return {"videos": rows, "total": len(names), "page": page, "per_page": per_page}
 
 
 @app.post("/api/videos")

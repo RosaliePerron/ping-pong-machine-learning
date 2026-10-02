@@ -32,7 +32,18 @@ c = TestClient(app)
 with open(src, "rb") as fh:
     assert c.post("/api/videos", files={"file": ("my clip.mp4", fh)}).json() == {"name": "my_clip.mp4"}
 assert c.post("/api/videos", files={"file": ("x.txt", b"hi")}).status_code == 400
-assert c.get("/api/videos").json() == [{"name": "my_clip.mp4", "frames": 10, "labeled": 0}]
+assert c.get("/api/videos").json() == {
+    "videos": [{"name": "my_clip.mp4", "frames": 10, "labeled": 0}], "total": 1, "page": 1, "per_page": 25}
+extras = ("999.mp4", "1000.mp4", "1000b.mp4")
+for extra in extras:  # paging + numeric descending order, no-number names last
+    shutil.copy(src, os.path.join(os.environ["DATA_DIR"], "videos", extra))
+p1 = c.get("/api/videos", params={"page": 1, "per_page": 3}).json()
+p2 = c.get("/api/videos", params={"page": 2, "per_page": 3}).json()
+assert [v["name"] for v in p1["videos"] + p2["videos"]] == ["1000b.mp4", "1000.mp4", "999.mp4", "my_clip.mp4"]
+assert p2["total"] == 4, p2
+assert c.get("/api/videos", params={"page": 0}).status_code == 422
+for extra in extras:
+    os.remove(os.path.join(os.environ["DATA_DIR"], "videos", extra))
 assert c.get("/api/videos/my_clip.mp4/frames/3.jpg").headers["content-type"] == "image/jpeg"
 assert c.get("/api/videos/my_clip.mp4/frames/99.jpg").status_code == 404
 assert c.get("/api/videos/..%2Flabels.db/labels").status_code in (200, 404)  # no crash

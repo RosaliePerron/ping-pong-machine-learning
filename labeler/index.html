@@ -54,6 +54,8 @@
       <label id="max-opt">Max frames <input name="max_frames" type="number" min="1" value="150" style="width: 5em"></label>
     </fieldset>
     <table><thead><tr><th></th><th>Video</th><th>Frames</th><th>Labelled</th></tr></thead><tbody id="videos"></tbody></table>
+    <p><button type="button" id="prevpage">‹ Prev</button> <span id="pageinfo"></span>
+      <button type="button" id="nextpage">Next ›</button> · selected: <span id="picked">none</span></p>
     <p><button>Start</button> <span id="startmsg"></span></p>
   </form>
 </section>
@@ -70,7 +72,8 @@
 <script>
 const $ = id => document.getElementById(id);
 let items = [], i = 0, labels = {}, counts = null;
-let runs = [];
+let runs = [], page = 1;
+const picked = new Set();  // selected videos, kept across pages
 const key = (v, f) => `${v}|${f}`;
 const frameUrl = it => `/api/videos/${encodeURIComponent(it.video)}/frames/${it.frame}.jpg`;
 
@@ -86,14 +89,23 @@ async function api(path, opts) {
 // ---- list / queue setup ----
 async function showList() {
   $('labeler').classList.add('hidden'); $('list').classList.remove('hidden');
-  const [vids, rs] = await Promise.all([api('/api/videos'), api('/api/runs')]);
+  const [res, rs] = await Promise.all([api(`/api/videos?page=${page}`), api('/api/runs')]);
   runs = rs;
+  const pages = Math.max(1, Math.ceil(res.total / res.per_page));
+  if (page > pages) { page = pages; return showList(); }
+  $('pageinfo').textContent = `page ${page} / ${pages} (${res.total} videos)`;
+  $('prevpage').disabled = page <= 1; $('nextpage').disabled = page >= pages;
   const mode = $('start').mode.value, multi = mode === 'plan';
-  $('videos').replaceChildren(...vids.map(v => {
+  if (!multi && picked.size > 1) picked.clear();
+  $('videos').replaceChildren(...res.videos.map(v => {
     const tr = document.createElement('tr');
     const box = Object.assign(document.createElement('input'),
-      { type: multi ? 'checkbox' : 'radio', name: 'videos', value: v.name });
-    box.onchange = fillRuns;
+      { type: multi ? 'checkbox' : 'radio', name: 'videos', value: v.name, checked: picked.has(v.name) });
+    box.onchange = () => {
+      if (!multi) picked.clear();
+      box.checked ? picked.add(v.name) : picked.delete(v.name);
+      fillRuns();
+    };
     tr.append(...[box, v.name, v.frames, v.labeled].map(x => { const td = document.createElement('td'); td.append(x); return td; }));
     return tr;
   }));
@@ -106,13 +118,16 @@ function fillRuns() {
   $('run-opts').classList.toggle('hidden', mode === 'plan');
   $('max-opt').classList.toggle('hidden', mode !== 'false-positives');
   // runs are named like v3_1902: show the ones made from the picked video first
-  const stem = ($('start').querySelector('[name=videos]:checked')?.value || '').replace(/\.[^.]+$/, '');
+  $('picked').textContent = [...picked].join(', ') || 'none';
+  const stem = ([...picked][0] || '').replace(/\.[^.]+$/, '');
   const ok = runs.filter(r => r.modes.includes(mode))
     .sort((a, b) => (b.name.endsWith(stem) && stem ? 1 : 0) - (a.name.endsWith(stem) && stem ? 1 : 0));
   $('run').replaceChildren(...ok.map(r => new Option(r.name, r.name)));
 }
 
 for (const r of document.querySelectorAll('[name=mode]')) r.onchange = showList;
+$('prevpage').onclick = () => { page--; showList(); };
+$('nextpage').onclick = () => { page++; showList(); };
 
 $('upload').onsubmit = async e => {
   e.preventDefault();
@@ -126,7 +141,7 @@ $('upload').onsubmit = async e => {
 $('start').onsubmit = e => {
   e.preventDefault();
   const f = e.target, mode = f.mode.value, q = new URLSearchParams({ mode });
-  const vids = [...f.querySelectorAll('[name=videos]:checked')].map(b => b.value);
+  const vids = [...picked].sort();  // fixed order: plan's pick depends on video order, not on click order
   if (!vids.length) { $('startmsg').textContent = 'pick a video'; return; }
   vids.forEach(v => q.append('videos', v));
   if (mode === 'plan') { q.set('runs', f.runs.value); q.set('run_len', f.run_len.value); }
