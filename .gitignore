@@ -20,3 +20,4 @@ __pycache__/**
 *.pyc
 
 labels.csv
+models/ball_net.pt
