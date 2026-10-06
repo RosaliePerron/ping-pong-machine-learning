@@ -3,6 +3,7 @@ services:
     build: .
     ports: ["8000:8000"]
     volumes:
-      - ./data:/data  # data/videos/*.mp4 + data/labels.db
+      - ./data:/data
+      - ../videos:/data/videos
       - ${REPO_DIR:-..}:/repo:ro  # label_ball.py (frame picking) + runs/ (ball_speed.py outputs)
     restart: unless-stopped
