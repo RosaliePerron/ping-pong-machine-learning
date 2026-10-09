@@ -9,6 +9,7 @@ Without --model the ball is found by colour + motion; with it, by the net from t
 """
 import argparse
 import csv
+import sys
 
 import cv2
 import numpy as np
@@ -44,11 +45,18 @@ def detect(frame, fg):
             if MIN_AREA <= stats[i, cv2.CC_STAT_AREA] <= MAX_AREA]
 
 
-def read_frames(cap):
+def read_frames(cap, stage):
+    """Yield frames, printing `progress STAGE n/total` to stderr (\r: one line in a terminal, lines for the labeler)."""
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    step, n = max(1, total // 100), 0
     while True:
         ok, frame = cap.read()
         if not ok:
+            print(file=sys.stderr)
             return
+        n += 1
+        if n % step == 0:
+            print(f"progress {stage} {n}/{total}", end="\r", file=sys.stderr, flush=True)
         yield frame
 
 
@@ -234,7 +242,7 @@ def write_debug(video, out, fps, frames_dets, tracks, bnc, pairs, rejected, H):
               ("bounce", colour["bounce"]), ("rejected bounce candidate + reason", colour["rejected"])]
 
     cap, writer = cv2.VideoCapture(video), None
-    for n, frame in enumerate(read_frames(cap)):
+    for n, frame in enumerate(read_frames(cap, "draw")):
         writer = writer or cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, frame.shape[1::-1])
         cv2.polylines(frame, [TABLE_PX.astype(int)], True, (0, 255, 0), 1)
         trail = [pos[k] for k in range(n - 10, n + 1) if k in pos]
@@ -284,7 +292,7 @@ def main():
                 if f < len(frames_dets):
                     frames_dets[f].append((x, y, 0))
     else:
-        frames = read_frames(cap)
+        frames = read_frames(cap, "detect")
         detections = model_detections(frames, a.model) if a.model else color_detections(frames)
         frames_dets = [dets for _, dets in detections]
         # Every raw detection, before clutter filtering and tracking: label_ball.py --false-positives
