@@ -2,7 +2,9 @@
 import csv
 import io
 import os
+import filecmp
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -163,20 +165,24 @@ def delete_label(name: str, frame: int):
     return {"ok": True}
 
 
-@app.get("/api/labels.csv")
-def export():
+def labels_csv() -> str:
     """Same columns as the repo's labels.csv, video paths as videos/<name>."""
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["video", "frame", "visible", "x", "y"])
     for v, f, vis, x, y in db.execute("SELECT video, frame, visible, x, y FROM labels ORDER BY video, frame"):
         w.writerow([f"videos/{v}", f, vis, "" if x is None else round(x, 1), "" if y is None else round(y, 1)])
-    return Response(out.getvalue(), media_type="text/csv",
+    return out.getvalue()
+
+
+@app.get("/api/labels.csv")
+def export():
+    return Response(labels_csv(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=labels.csv"})
 
 
 @app.get("/api/models")
-def list_models():
+def list_models() -> list[int]:
     """Saved model versions: models/ball_net_vN.pt -> N."""
     return sorted(int(m[1]) for p in MODELS.glob("ball_net_v*.pt") if (m := re.fullmatch(r"ball_net_v(\d+)\.pt", p.name)))
 
@@ -250,6 +256,70 @@ def debug_video(run: str):
     if not p.is_file():
         raise HTTPException(404, "no debug video yet")
     return FileResponse(p, media_type="video/mp4", filename=f"{run}.mp4")
+
+
+def save_model(always: bool) -> int | None:
+    """models/ball_net.pt -> ball_net_vN.pt with the next N, unless (not always) it is already the latest version.
+    Returns the version ball_net.pt is saved as, None without a ball_net.pt."""
+    src, n = MODELS / "ball_net.pt", max(list_models(), default=0)
+    if not src.is_file():
+        return None
+    if not always and n and filecmp.cmp(src, MODELS / f"ball_net_v{n}.pt", shallow=False):
+        return n
+    shutil.copy2(src, MODELS / f"ball_net_v{n + 1}.pt")
+    return n + 1
+
+
+training: dict = {"state": "idle"}  # ponytail: in memory like jobs; a restart mid-training loses the status
+train_lock = threading.Lock()
+
+
+@app.post("/api/train")
+def start_train():
+    """Back up the model and labels.csv, replace labels.csv with the database's labels, train_ball.py, save as a
+    new version. In the background; poll GET /api/train."""
+    if not train_lock.acquire(blocking=False):
+        raise HTTPException(409, "a training is already running")
+    training.clear()
+    training.update(state="running", stage="backup", done=0, total=0)
+    threading.Thread(target=train, daemon=True).start()
+    return training
+
+
+@app.get("/api/train")
+def train_status():
+    return training
+
+
+def train():
+    job, log, prev = training, deque(maxlen=20), None
+    try:
+        prev = save_model(always=False)  # CLAUDE.md: back up ball_net.pt before every training run
+        # labels.csv trained the previous version: tag it with that number. An existing labels_vN.csv is
+        # the original from an earlier failed attempt, whose labels.csv is already a database export.
+        labels, old = REPO / "labels.csv", REPO / f"labels_v{prev or max(list_models(), default=0)}.csv"
+        if labels.is_file() and not old.exists():
+            shutil.copy2(labels, old)
+        labels.write_text(labels_csv())
+        job.update(stage="load", backup=old.name)
+        p = subprocess.Popen([sys.executable, "-u", str(REPO / "train_ball.py")], cwd=REPO, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for line in p.stdout:  # text mode turns train_ball.py's \r epoch line into lines
+            if m := re.match(r"epoch (\d+)/(\d+)", line):
+                job.update(stage="train", done=int(m[1]), total=int(m[2]))
+            elif line.strip():
+                log.append(line.rstrip())
+                if "val precision" in line:
+                    job["val"] = line.strip()
+        if p.wait():
+            raise RuntimeError("\n".join(log))
+        job.update(state="done", version=save_model(always=True), log="\n".join(log))
+    except Exception as e:
+        if prev:  # train_ball.py may have overwritten ball_net.pt before failing: put the saved one back
+            shutil.copy2(MODELS / f"ball_net_v{prev}.pt", MODELS / "ball_net.pt")
+        job.update(state="error", error=str(e) or repr(e))
+    finally:
+        train_lock.release()
 
 
 @app.get("/")
