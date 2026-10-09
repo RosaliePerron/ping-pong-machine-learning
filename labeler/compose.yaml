@@ -5,10 +5,10 @@ services:
     volumes:
       - ./data:/data
       - ../videos:/data/videos
-      - ${REPO_DIR:-..}:/repo:ro  # label_ball.py (frame picking), ball_speed.py + models/ (debug videos)
-      - ${REPO_DIR:-..}/runs:/repo/runs  # ball_speed.py outputs; debug videos are written here
+      # label_ball.py (frame picking), ball_speed.py (debug videos into runs/), train_ball.py (writes labels.csv, models/)
+      - ${REPO_DIR:-..}:/repo
     restart: unless-stopped
-    deploy:  # GPU for debug videos; needs nvidia-container-toolkit. Remove this block to run them on CPU.
+    deploy:  # GPU for debug videos and training; needs nvidia-container-toolkit. Remove this block to run them on CPU.
       resources:
         reservations:
           devices: [{driver: nvidia, count: all, capabilities: [gpu]}]

@@ -21,3 +21,4 @@ __pycache__/**
 
 models/ball_net.pt
 labels.csv
+labels_v*.csv
