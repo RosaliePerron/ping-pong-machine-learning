@@ -19,6 +19,7 @@
   #cur { width: 14px; height: 14px; border: 2px solid red; border-radius: 50%; }
   #prev { color: cyan; font: 24px monospace; line-height: 1; }
   #guess { width: 40px; height: 40px; border: 2px solid yellow; border-radius: 50%; }
+  #runvideo { display: block; max-width: 100%; max-height: 80vh; }
   #status { font-variant-numeric: tabular-nums; }
   .hidden { display: none; }
   kbd { border: 1px solid; border-radius: 3px; padding: 0 4px; }
@@ -28,6 +29,7 @@
 <header>
   <h1><a href="#">Frame Labeler</a></h1>
   <label>Your name <input id="who" size="12"></label>
+  <a href="#/runs">Runs</a>
   <a href="/api/labels.csv">Download labels.csv</a>
 </header>
 
@@ -68,6 +70,19 @@
   </form>
 </section>
 
+<section id="runs" class="hidden">
+  <h2>Runs</h2>
+  <table><thead><tr><th>Run</th><th>Debug video</th><th>Files</th></tr></thead><tbody id="runlist"></tbody></table>
+</section>
+
+<section id="run" class="hidden">
+  <h2 id="runname"></h2>
+  <video id="runvideo" controls preload="metadata"></video>
+  <p id="novideo" class="hidden">No debug video in this run. Make one under <a href="#">Debug video</a>.</p>
+  <h3>Files</h3>
+  <ul id="runfiles"></ul>
+</section>
+
 <section id="labeler" class="hidden">
   <p id="status"></p>
   <p id="keys"></p>
@@ -95,8 +110,12 @@ async function api(path, opts) {
 }
 
 // ---- list / queue setup ----
+function showSection(id) {
+  for (const s of document.querySelectorAll('body > section')) s.classList.toggle('hidden', s.id !== id);
+}
+
 async function showList() {
-  $('labeler').classList.add('hidden'); $('list').classList.remove('hidden');
+  showSection('list');
   const [res, rs] = await Promise.all([api(`/api/videos?page=${page}`), api('/api/runs')]);
   runs = rs;
   const pages = Math.max(1, Math.ceil(res.total / res.per_page));
@@ -163,7 +182,8 @@ $('debug').onsubmit = async e => {
       if (j.state === 'error') throw new Error(j.error);
       if (j.state === 'done') {
         bar.classList.add('hidden');
-        msg.innerHTML = `${run}: <a href="/api/debug/${encodeURIComponent(run)}/debug.mp4" download>Download debug.mp4</a>`;
+        msg.innerHTML = `<a href="#/runs/${encodeURIComponent(run)}">${run}</a>: ` +
+          `<a href="/api/debug/${encodeURIComponent(run)}/debug.mp4" download>Download debug.mp4</a>`;
         break;
       }
       if (j.total) { bar.max = j.total; bar.value = j.done; } else bar.removeAttribute('value');  // no value = busy
@@ -194,7 +214,7 @@ async function refreshLabels() {
 }
 
 async function openQueue(q) {
-  $('list').classList.add('hidden'); $('labeler').classList.remove('hidden');
+  showSection('labeler');
   $('status').textContent = 'picking frames…'; $('keys').textContent = '';
   try { ({ items, counts } = await api(`/api/queue?${q}`)); }
   catch (err) { $('status').textContent = err.message; return; }
@@ -268,7 +288,44 @@ addEventListener('keydown', e => {
   else if (e.key === 'ArrowRight') show(i + 1);
 });
 
-const route = () => location.hash.length > 1 ? openQueue(location.hash.slice(1)) : showList();
+// ---- runs (ball_speed.py output folders) ----
+const runFile = (run, f) => `/api/runs/${encodeURIComponent(run)}/${encodeURIComponent(f)}`;
+const link = (href, text) => Object.assign(document.createElement('a'), { href, textContent: text });
+
+async function showRuns() {
+  showSection('runs');
+  const rs = await api('/api/runs');
+  $('runlist').replaceChildren(...rs.map(r => {
+    const tr = document.createElement('tr');
+    tr.append(...[link(`#/runs/${encodeURIComponent(r.name)}`, r.name), r.files.includes('debug.mp4') ? 'yes' : '',
+      r.files.join(', ')].map(x => { const td = document.createElement('td'); td.append(x); return td; }));
+    return tr;
+  }));
+}
+
+async function showRun(name) {
+  showSection('run');
+  $('runname').textContent = name;
+  const r = (await api('/api/runs')).find(r => r.name === name);
+  const files = r?.files || [], vid = files.includes('debug.mp4');
+  if (!r) $('runname').textContent = `${name}: no such run`;
+  $('runvideo').classList.toggle('hidden', !vid);
+  $('novideo').classList.toggle('hidden', vid || !r);
+  if (vid) $('runvideo').src = runFile(name, 'debug.mp4'); else $('runvideo').removeAttribute('src');
+  $('runfiles').replaceChildren(...files.map(f => {
+    const li = document.createElement('li'), a = link(runFile(name, f), f);
+    a.download = f; li.append(a); return li;
+  }));
+}
+
+const route = () => {
+  const h = location.hash.slice(1);
+  $('runvideo').pause();  // hidden sections keep playing otherwise
+  if (h === '/runs') showRuns();
+  else if (h.startsWith('/runs/')) showRun(decodeURIComponent(h.slice(6)));
+  else if (h) openQueue(h);
+  else showList();
+};
 addEventListener('hashchange', route);
 route();
 </script>

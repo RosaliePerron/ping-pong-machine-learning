@@ -61,7 +61,8 @@ clip = os.path.join(os.environ["DATA_DIR"], "videos", "my_clip.mp4")
 q = c.get("/api/queue", params={"mode": "plan", "videos": "my_clip.mp4", "runs": 3, "run_len": 4}).json()
 assert [it["frame"] for it in q["items"]] == [f for _, f in label_ball.plan([clip], 3, 4)]
 assert c.get("/api/queue", params={"mode": "plan", "videos": "my_clip.mp4", "run_len": 10}).status_code == 400
-assert c.get("/api/runs").json() == [{"name": "v1_my_clip", "modes": ["from-run", "false-positives"]}]
+assert c.get("/api/runs").json() == [{"name": "v1_my_clip", "modes": ["from-run", "false-positives"],
+                                      "files": ["detections.csv", "rejected.csv", "speeds.csv", "track.csv"]}]
 q = c.get("/api/queue", params={"mode": "from-run", "videos": "my_clip.mp4", "run": "v1_my_clip"}).json()
 assert [it["frame"] for it in q["items"]] == [2, 3, 4], q
 q = c.get("/api/queue", params={"mode": "false-positives", "videos": "my_clip.mp4", "run": "v1_my_clip"}).json()
@@ -97,5 +98,12 @@ assert r.headers["content-disposition"] == 'attachment; filename="v2_my_clip.mp4
 assert cv2.VideoCapture(os.path.join(repo, "runs", "v2_my_clip", "debug.mp4")).get(cv2.CAP_PROP_FRAME_COUNT) == 10
 assert not os.path.exists(os.path.join(repo, "runs", "v2_my_clip", "dbg.mp4"))
 assert c.get("/api/debug/v1_my_clip/debug.mp4").status_code == 404
+# run page: plays debug.mp4 inline, seekable
+r = c.get("/api/runs/v2_my_clip/debug.mp4", headers={"Range": "bytes=0-9"})
+assert r.status_code == 206 and len(r.content) == 10, r
+assert r.headers["content-disposition"].startswith("inline"), r.headers
+assert c.get("/api/runs/v1_my_clip/track.csv").text.startswith("track,frame")
+for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", "..%2Fmodels/ball_net.pt", "v1_my_clip/."):
+    assert c.get(f"/api/runs/{bad}").status_code == 404, bad
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
 print("ok")

@@ -104,7 +104,17 @@ def run_modes(d: Path) -> list[str]:
 @app.get("/api/runs")
 def list_runs():
     dirs = sorted(d for d in RUNS.iterdir() if d.is_dir()) if RUNS.is_dir() else []
-    return [{"name": d.name, "modes": run_modes(d)} for d in dirs]
+    return [{"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file())}
+            for d in dirs]
+
+
+@app.get("/api/runs/{run}/{name}")
+def run_file(run: str, name: str):
+    """One file of a run folder; the run page plays debug.mp4 from here (FileResponse handles Range, so seeking works)."""
+    p = run_dir(run) / name
+    if p.parent != RUNS / run or not p.is_file():  # blocks ../ traversal
+        raise HTTPException(404, "no such file")
+    return FileResponse(p, content_disposition_type="inline", filename=name)
 
 
 @app.get("/api/queue")
