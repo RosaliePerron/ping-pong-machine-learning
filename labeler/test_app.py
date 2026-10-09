@@ -104,6 +104,19 @@ assert not os.path.exists(os.path.join(repo, "runs", "v2_my_clip", "dbg.mp4"))
 assert c.get("/api/debug/v1_my_clip/debug.mp4").status_code == 404
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
 
+# cancel: a stand-in ball_speed.py that never finishes gets killed
+with open(os.path.join(repo, "ball_speed.py"), "w") as fh:
+    fh.write("import time\nprint('progress detect 1/10', flush=True)\ntime.sleep(60)\n")
+c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2})
+assert c.delete("/api/debug/v2_my_clip").json()["state"] == "cancelling"
+for _ in range(100):
+    if (job := c.get("/api/debug/v2_my_clip").json())["state"] != "cancelling":
+        break
+    time.sleep(0.1)
+assert job["state"] == "cancelled", job
+assert c.delete("/api/debug/v2_my_clip").status_code == 409
+assert c.get("/api/debug/v2_my_clip/debug.mp4").status_code == 200  # cancelled before encoding: old video kept
+
 # training: stand-in train_ball.py prints epochs, checks it got the database's labels, writes a new ball_net.pt
 with open(os.path.join(repo, "train_ball.py"), "w") as fh:
     fh.write("assert open('labels.csv').read().splitlines()[1] == 'videos/my_clip.mp4,3,0,,'\n"

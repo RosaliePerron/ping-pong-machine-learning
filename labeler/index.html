@@ -173,14 +173,18 @@ async function pollDebug() {  // one poller for every job; the server keeps the 
           li.append(`${run}: `, a);
         }
         else if (j.state === 'error') li.textContent = `${run}: ${j.error}`;
+        else if (j.state !== 'running') li.textContent = `${run}: ${j.state}`;  // cancelling, cancelled
         else {
           const bar = document.createElement('progress');
           if (j.total) { bar.max = j.total; bar.value = j.done; }  // no value = busy
-          li.append(`${run}: ${j.stage}` + (j.total ? ` ${Math.round(100 * j.done / j.total)}% ` : '… '), bar);
+          const cancel = Object.assign(document.createElement('button'), { textContent: 'Cancel' });
+          cancel.onclick = () => api(`/api/debug/${encodeURIComponent(run)}`, { method: 'DELETE' })
+            .catch(err => { $('dbgmsg').textContent = err.message; });
+          li.append(`${run}: ${j.stage}` + (j.total ? ` ${Math.round(100 * j.done / j.total)}% ` : '… '), bar, ' ', cancel);
         }
         return li;
       }));
-      if (!jobs.some(([, j]) => j.state === 'running')) break;
+      if (!jobs.some(([, j]) => j.state === 'running' || j.state === 'cancelling')) break;
       await new Promise(r => setTimeout(r, 1000));
     }
   } catch (err) { $('dbgmsg').textContent = err.message; }
