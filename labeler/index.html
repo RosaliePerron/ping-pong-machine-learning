@@ -46,6 +46,15 @@
   </form>
 
   <hr>
+  <h2>Train a new model</h2>
+  <p>Saves <code>labels.csv</code> as <code>labels_vN.csv</code> (N = latest model), replaces it with the labels
+    from this app, runs <code>train_ball.py</code> and saves the result as the next <code>ball_net_vN.pt</code>.</p>
+  <form id="train">
+    <button>Train</button>
+    <progress id="trainbar" class="hidden"></progress> <span id="trainmsg"></span>
+  </form>
+
+  <hr>
   <h2>Start labelling</h2>
   <form id="start">
     <fieldset>
@@ -164,7 +173,8 @@ $('prevpage').onclick = () => { page--; showList(); };
 $('nextpage').onclick = () => { page++; showList(); };
 
 // ---- debug video (debug.sh VIDEO VERSION) ----
-api('/api/models').then(vs => $('dbgversion').replaceChildren(...vs.reverse().map(v => new Option(`v${v}`, v))));
+const loadModels = () => api('/api/models').then(vs => $('dbgversion').replaceChildren(...vs.reverse().map(v => new Option(`v${v}`, v))));
+loadModels();
 
 $('debug').onsubmit = async e => {
   e.preventDefault();
@@ -190,6 +200,31 @@ $('debug').onsubmit = async e => {
   } catch (err) { bar.classList.add('hidden'); msg.textContent = err.message; }
   f.querySelector('button').disabled = false;
 };
+
+// ---- training (train_ball.py) ----
+async function pollTrain() {
+  const btn = $('train').querySelector('button'), msg = $('trainmsg'), bar = $('trainbar');
+  btn.disabled = true; bar.classList.remove('hidden');
+  try {
+    for (;;) {
+      const j = await api('/api/train');
+      if (j.state === 'error') throw new Error(j.error);
+      if (j.state === 'done') { msg.textContent = `done: saved as v${j.version}`; loadModels(); break; }
+      if (j.state !== 'running') { msg.textContent = ''; break; }
+      if (j.total) { bar.max = j.total; bar.value = j.done; } else bar.removeAttribute('value');
+      msg.textContent = (j.total ? `epoch ${j.done}/${j.total}` : `${j.stage}…`) + (j.val ? ` · ${j.val}` : '');
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  } catch (err) { msg.textContent = err.message; }
+  bar.classList.add('hidden'); btn.disabled = false;
+}
+$('train').onsubmit = async e => {
+  e.preventDefault();
+  if (!confirm('Replace labels.csv with the labels from this app and train a new model?')) return;
+  try { await api('/api/train', { method: 'POST' }); } catch (err) { $('trainmsg').textContent = err.message; return; }
+  pollTrain();
+};
+api('/api/train').then(j => j.state === 'running' && pollTrain());  // a training started before this page loaded
 
 $('start').onsubmit = e => {
   e.preventDefault();

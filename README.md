@@ -35,6 +35,8 @@ Videos go in `videos/` and are named by number (`videos/1948.mp4`). They are git
 
 4. **Save it as a version** (run the backup command from step 1 again) and compare it to the previous versions with debug videos (see below).
 
+The web labeller does all of this under **Train a new model**: it backs up `ball_net.pt` as in step 1, saves `labels.csv` as `labels_vN.csv` (N = the latest model version, the one trained on it), replaces `labels.csv` with the labels from its database (labels only in the old CSV are not merged in), trains with the default arguments and saves the result as the next `ball_net_vN.pt`. The page shows the epoch and the latest validation scores. If training fails, `ball_net.pt` is put back. Files it writes are owned by root.
+
 ## Generating a debug video
 
 ```sh

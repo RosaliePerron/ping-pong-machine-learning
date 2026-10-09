@@ -126,4 +126,45 @@ assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
     "Longest rally (bounce pairs)": 0, "Bounce pairs measured": 0, "Rejected bounce candidates": "1 (1 x)"}
 assert c.get("/api/runs/nope").status_code == 404
 assert c.get("/api/runs/..").status_code == 404
+
+# training: stand-in train_ball.py prints epochs, checks it got the database's labels, writes a new ball_net.pt
+with open(os.path.join(repo, "train_ball.py"), "w") as fh:
+    fh.write("assert open('labels.csv').read().splitlines()[1] == 'videos/my_clip.mp4,3,0,,'\n"
+             "for e in (1, 2): print(f'\\repoch {e}/2  loss 0.1', end='', flush=True)\n"
+             "print()\nprint('  val precision 0.90  recall 0.80  F1 0.85  <- saved')\n"
+             "open('models/ball_net.pt', 'w').write('new')\n")
+with open(os.path.join(repo, "labels.csv"), "w") as fh:
+    fh.write("old labels\n")
+
+
+def train():
+    assert c.post("/api/train").json()["state"] == "running"
+    for _ in range(100):
+        if (job := c.get("/api/train").json())["state"] != "running":
+            return job
+        time.sleep(0.1)
+
+
+def read(*path):
+    with open(os.path.join(repo, *path)) as fh:
+        return fh.read()
+
+
+job = train()  # ball_net.pt and v10 are both empty: already saved, so no pre-training copy
+assert job["state"] == "done" and job["version"] == 11 and job["val"].startswith("val precision"), job
+assert job["done"] == job["total"] == 2, job
+assert read("labels_v10.csv") == "old labels\n"
+assert read("labels.csv").startswith("video,frame,visible,x,y\n")
+assert read("models", "ball_net_v11.pt") == read("models", "ball_net.pt") == "new"
+assert c.get("/api/models").json() == [2, 10, 11]
+job = train()  # second run: labels.csv (a db export) trained v11
+assert job["version"] == 12 and read("labels_v11.csv").startswith("video,"), job
+open(os.path.join(repo, "models", "ball_net.pt"), "w").write("unsaved")
+with open(os.path.join(repo, "train_ball.py"), "w") as fh:  # failing run that overwrote ball_net.pt first
+    fh.write("open('models/ball_net.pt', 'w').write('bad')\nraise SystemExit('boom')\n")
+job = train()
+assert job["state"] == "error" and "boom" in job["error"], job
+assert read("models", "ball_net_v13.pt") == "unsaved"  # backed up before training
+assert read("models", "ball_net.pt") == "unsaved"  # restored after the failed run overwrote it
+assert not os.path.exists(os.path.join(repo, "models", "ball_net_v14.pt"))
 print("ok")
