@@ -1,4 +1,4 @@
-"""Frame labelling API: upload videos, click the ball in frames, export labels.csv (video,frame,visible,x,y)."""
+"""Frame labelling API: click the ball in frames, export labels.csv (video,frame,visible,x,y)."""
 import csv
 import io
 import os
@@ -11,7 +11,7 @@ from collections import deque
 from pathlib import Path
 
 import cv2
-from fastapi import FastAPI, HTTPException, Query, UploadFile
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -54,23 +54,6 @@ def list_videos(page: int = Query(1, ge=1), per_page: int = Query(25, ge=1, le=2
     rows = [{"name": n, "frames": frame_count(VIDEOS / n), "labeled": done.get(n, 0)}
             for n in names[(page - 1) * per_page:page * per_page]]
     return {"videos": rows, "total": len(names), "page": page, "per_page": per_page}
-
-
-@app.post("/api/videos")
-def upload(file: UploadFile):
-    name = re.sub(r"[^\w.-]", "_", Path(file.filename or "").name)
-    if Path(name).suffix.lower() not in EXTS:
-        raise HTTPException(400, f"expected one of {sorted(EXTS)}")
-    dest = VIDEOS / name
-    if dest.exists():
-        raise HTTPException(409, f"{name} already exists")
-    with dest.open("wb") as fh:
-        while chunk := file.file.read(1 << 20):
-            fh.write(chunk)
-    if frame_count(dest) <= 0:
-        dest.unlink()
-        raise HTTPException(400, "could not read video")
-    return {"name": name}
 
 
 @app.get("/api/videos/{name}/frames/{frame}.jpg")

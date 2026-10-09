@@ -22,16 +22,14 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app import app  # noqa: E402
 
-src = os.path.join(os.environ["DATA_DIR"], "src.mp4")
+src = os.path.join(os.environ["DATA_DIR"], "videos", "my_clip.mp4")
 w = cv2.VideoWriter(src, cv2.VideoWriter_fourcc(*"mp4v"), 30, (64, 48))
 for i in range(10):
     w.write(np.full((48, 64, 3), i * 20, np.uint8))
 w.release()
 
 c = TestClient(app)
-with open(src, "rb") as fh:
-    assert c.post("/api/videos", files={"file": ("my clip.mp4", fh)}).json() == {"name": "my_clip.mp4"}
-assert c.post("/api/videos", files={"file": ("x.txt", b"hi")}).status_code == 400
+assert c.post("/api/videos").status_code == 405  # no uploads: videos come from the repo's videos/
 assert c.get("/api/videos").json() == {
     "videos": [{"name": "my_clip.mp4", "frames": 10, "labeled": 0}], "total": 1, "page": 1, "per_page": 25}
 extras = ("999.mp4", "1000.mp4", "1000b.mp4")

@@ -34,11 +34,6 @@
 </header>
 
 <section id="list">
-  <form id="upload">
-    <input type="file" name="file" accept="video/*" required>
-    <button>Upload video</button> <span id="upmsg"></span>
-  </form>
-
   <h2>Debug video</h2>
   <p><a href="#/runs">See all runs and watch their debug videos →</a></p>
   <form id="debug">
@@ -157,15 +152,6 @@ function fillRuns() {
 for (const r of document.querySelectorAll('[name=mode]')) r.onchange = showList;
 $('prevpage').onclick = () => { page--; showList(); };
 $('nextpage').onclick = () => { page++; showList(); };
-
-$('upload').onsubmit = async e => {
-  e.preventDefault();
-  $('upmsg').textContent = 'uploading…';
-  try {
-    await api('/api/videos', { method: 'POST', body: new FormData(e.target) });
-    $('upmsg').textContent = 'done'; e.target.reset(); showList();
-  } catch (err) { $('upmsg').textContent = err.message; }
-};
 
 // ---- debug video (debug.sh VIDEO VERSION) ----
 api('/api/models').then(vs => $('dbgversion').replaceChildren(...vs.reverse().map(v => new Option(`v${v}`, v))));
