@@ -4,10 +4,11 @@ import io
 import os
 import re
 import sqlite3
+import statistics
 import subprocess
 import sys
 import threading
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 import cv2
@@ -89,6 +90,52 @@ def list_runs():
     dirs = sorted(d for d in RUNS.iterdir() if d.is_dir()) if RUNS.is_dir() else []
     return [{"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file())}
             for d in dirs]
+
+
+RALLY_GAP_S = 3  # ponytail: a pause this long between measured bounce pairs starts a new rally; tune if rallies merge/split
+
+
+def read_csv(p: Path) -> list[dict] | None:
+    if not p.is_file():
+        return None
+    with p.open(newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def run_stats(d: Path) -> list[list]:
+    """[label, value] rows for the run page, from whichever ball_speed.py outputs the folder has."""
+    rows = []
+    if (det := read_csv(d / "detections.csv")) is not None:
+        rows += [["Detections", len(det)], ["Frames with a detection", len({r["frame"] for r in det})]]
+    if (trk := read_csv(d / "track.csv")) is not None:
+        rows += [["Tracks", len({r["track"] for r in trk})], ["Tracked frames", len(trk)]]
+    if (spd := read_csv(d / "speeds.csv")) is not None:
+        rallies, end = [], None
+        for r in spd:
+            t, dt = float(r["t_s"]), float(r["dt_s"])
+            if end is None or t - end > RALLY_GAP_S:
+                rallies.append(0)
+            rallies[-1] += 1
+            end = t + dt
+        kmh = [float(r["speed_kmh"]) for r in spd]
+        rows += [["Rallies", len(rallies)], ["Longest rally (bounce pairs)", max(rallies, default=0)],
+                 ["Bounce pairs measured", len(kmh)]]
+        if kmh:
+            rows += [["Average speed (km/h)", round(statistics.mean(kmh), 1)],
+                     ["Median speed (km/h)", round(statistics.median(kmh), 1)], ["Max speed (km/h)", max(kmh)]]
+    if (rej := read_csv(d / "rejected.csv")) is not None:
+        why = ", ".join(f"{n} {k}" for k, n in Counter(r["reason"] for r in rej).most_common())
+        rows.append(["Rejected bounce candidates", f"{len(rej)} ({why})" if rej else 0])
+    return rows
+
+
+@app.get("/api/runs/{run}")
+def run_info(run: str):
+    d = run_dir(run)
+    if not d.is_dir():
+        raise HTTPException(404, "no such run")
+    return {"name": run, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
+            "stats": run_stats(d)}
 
 
 @app.get("/api/runs/{run}/{name}")

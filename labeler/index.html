@@ -78,6 +78,7 @@
 
 <section id="run" class="hidden">
   <h2 id="runname"></h2>
+  <table style="margin-bottom: 16px"><tbody id="runstats"></tbody></table>
   <video id="runvideo" controls preload="metadata"></video>
   <p id="novideo" class="hidden">No debug video in this run. Make one under <a href="#">Debug video</a>.</p>
   <h3>Files</h3>
@@ -298,8 +299,13 @@ async function showRuns() {
 async function showRun(name) {
   showSection('run');
   $('runname').textContent = name;
-  const r = (await api('/api/runs')).find(r => r.name === name);
+  $('runstats').replaceChildren();
+  const r = await api(`/api/runs/${encodeURIComponent(name)}`).catch(() => null);
   const files = r?.files || [], vid = files.includes('debug.mp4');
+  $('runstats').replaceChildren(...(r?.stats || []).map(([k, v]) => {
+    const tr = document.createElement('tr'), th = document.createElement('th'), td = document.createElement('td');
+    th.textContent = k; td.textContent = v; tr.append(th, td); return tr;
+  }));
   if (!r) $('runname').textContent = `${name}: no such run`;
   $('runvideo').classList.toggle('hidden', !vid);
   $('novideo').classList.toggle('hidden', vid || !r);

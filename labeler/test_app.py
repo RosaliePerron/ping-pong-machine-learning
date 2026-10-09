@@ -101,7 +101,25 @@ r = c.get("/api/runs/v2_my_clip/debug.mp4", headers={"Range": "bytes=0-9"})
 assert r.status_code == 206 and len(r.content) == 10, r
 assert r.headers["content-disposition"].startswith("inline"), r.headers
 assert c.get("/api/runs/v1_my_clip/track.csv").text.startswith("track,frame")
-for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", "..%2Fmodels/ball_net.pt", "v1_my_clip/."):
+for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", "..%2Fmodels/ball_net.pt", "v1_my_clip/%2E"):
     assert c.get(f"/api/runs/{bad}").status_code == 404, bad
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
+
+# run page stats: two pairs 0.1 s apart are one rally, a 3+ s pause starts the next
+stats_run = os.path.join(repo, "runs", "v9_stats")
+os.makedirs(stats_run)
+with open(os.path.join(stats_run, "speeds.csv"), "w") as fh:
+    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,1,"0,0","1,1",1,0.5,10\n'
+             '0,1.6,"1,1","0,0",1,0.5,20\n1,10,"0,0","1,1",1,0.5,60\n')
+with open(os.path.join(stats_run, "rejected.csv"), "w") as fh:
+    fh.write("frame,x_px,y_px,reason\n1,0,0,bends up\n2,0,0,paddle hit\n3,0,0,bends up\n")
+assert dict(c.get("/api/runs/v9_stats").json()["stats"]) == {
+    "Rallies": 2, "Longest rally (bounce pairs)": 2, "Bounce pairs measured": 3, "Average speed (km/h)": 30.0,
+    "Median speed (km/h)": 20.0, "Max speed (km/h)": 60.0,
+    "Rejected bounce candidates": "3 (2 bends up, 1 paddle hit)"}
+assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
+    "Detections": 1, "Frames with a detection": 1, "Tracks": 2, "Tracked frames": 2, "Rallies": 0,
+    "Longest rally (bounce pairs)": 0, "Bounce pairs measured": 0, "Rejected bounce candidates": "1 (1 x)"}
+assert c.get("/api/runs/nope").status_code == 404
+assert c.get("/api/runs/..").status_code == 404
 print("ok")
