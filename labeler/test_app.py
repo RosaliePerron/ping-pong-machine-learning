@@ -21,6 +21,7 @@ for name, text in {"track.csv": "track,frame,t_s,x_px,y_px\n0,1,0,9,9\n1,6,0,9,9
         fh.write(text)
 from fastapi.testclient import TestClient  # noqa: E402
 
+import app as app_module  # noqa: E402
 from app import app  # noqa: E402
 
 src = os.path.join(os.environ["DATA_DIR"], "src.mp4")
@@ -89,10 +90,15 @@ assert c.get("/api/models").json() == [2, 10]
 assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 3}).status_code == 404
 assert c.post("/api/debug", json={"video": "../labels.db", "version": 2}).status_code == 404
 assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2}).json() == {"run": "v2_my_clip"}
+assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 10}).json() == {"run": "v10_my_clip"}  # at once
 for _ in range(100):
-    if (job := c.get("/api/debug/v2_my_clip").json())["state"] != "running":
+    jobs = c.get("/api/debug").json()
+    if all(j["state"] != "running" for j in jobs.values()):
         break
     time.sleep(0.1)
+assert list(jobs) == ["v2_my_clip", "v10_my_clip"], jobs
+assert jobs["v10_my_clip"]["state"] == "done", jobs
+job = c.get("/api/debug/v2_my_clip").json()
 assert job["state"] == "done", job
 assert job["log"] == "10 frames", job
 r = c.get("/api/debug/v2_my_clip/debug.mp4")
@@ -108,6 +114,21 @@ assert c.get("/api/runs/v1_my_clip/track.csv").text.startswith("track,frame")
 for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", "..%2Fmodels/ball_net.pt", "v1_my_clip/%2E"):
     assert c.get(f"/api/runs/{bad}").status_code == 404, bad
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
+with app_module.train_lock:  # as if a training were running
+    assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2}).status_code == 409
+
+# cancel: a stand-in ball_speed.py that never finishes gets killed
+with open(os.path.join(repo, "ball_speed.py"), "w") as fh:
+    fh.write("import time\nprint('progress detect 1/10', flush=True)\ntime.sleep(60)\n")
+c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2})
+assert c.delete("/api/debug/v2_my_clip").json()["state"] == "cancelling"
+for _ in range(100):
+    if (job := c.get("/api/debug/v2_my_clip").json())["state"] != "cancelling":
+        break
+    time.sleep(0.1)
+assert job["state"] == "cancelled", job
+assert c.delete("/api/debug/v2_my_clip").status_code == 409
+assert c.get("/api/debug/v2_my_clip/debug.mp4").status_code == 200  # cancelled before encoding: old video kept
 
 # run page stats: two pairs 0.1 s apart are one rally, a 3+ s pause starts the next
 stats_run = os.path.join(repo, "runs", "v9_stats")

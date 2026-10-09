@@ -255,6 +255,7 @@ def list_models() -> list[int]:
 
 
 jobs: dict[str, dict] = {}  # run name -> status. ponytail: in memory, lost on restart (finished videos stay in runs/)
+procs: dict[str, subprocess.Popen] = {}  # run name -> its running ball_speed.py or ffmpeg, for cancelling
 
 
 class DebugJob(BaseModel):
@@ -268,9 +269,12 @@ def start_debug(job: DebugJob):
     video, model = video_path(job.video), MODELS / f"ball_net_v{job.version}.pt"
     if not model.is_file():
         raise HTTPException(404, f"no model v{job.version}")
+    if train_lock.locked():  # both want the GPU, and training rewrites models/
+        raise HTTPException(409, "a training is running; wait for it to finish")
     run = f"v{job.version}_{video.stem}"
-    if jobs.get(run, {}).get("state") == "running":
+    if jobs.get(run, {}).get("state") in ("running", "cancelling"):
         raise HTTPException(409, f"{run} is already running")
+    jobs.pop(run, None)  # a re-run moves to the end of the list
     jobs[run] = {"state": "running", "stage": "starting", "done": 0, "total": 0}
     threading.Thread(target=make_debug, args=(run, video, model), daemon=True).start()
     return {"run": run}
@@ -280,8 +284,8 @@ def make_debug(run: str, video: Path, model: Path):
     job, out, log = jobs[run], RUNS / run, deque(maxlen=20)
     try:
         out.mkdir(parents=True, exist_ok=True)
-        p = subprocess.Popen([sys.executable, str(REPO / "ball_speed.py"), str(video), "--model", str(model),
-                              "--debug", "dbg.mp4"], cwd=out, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        p = start(run, [sys.executable, str(REPO / "ball_speed.py"), str(video), "--model", str(model),
+                        "--debug", "dbg.mp4"], cwd=out, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for line in p.stdout:  # text mode turns ball_speed.py's \r progress into lines
             if m := re.fullmatch(r"progress (\w+) (\d+)/(\d+)\n", line):
                 job.update(stage=m[1], done=int(m[2]), total=int(m[3]))
@@ -291,14 +295,44 @@ def make_debug(run: str, video: Path, model: Path):
             raise RuntimeError("\n".join(log))
         job.update(stage="encode", done=0, total=0)
         # OpenCV writes mp4v, which VLC and browsers can't play: re-encode to H.264, like debug.sh
-        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", "dbg.mp4", "-c:v", "libx264", "-crf", "20",
-                            "-pix_fmt", "yuv420p", "debug.mp4"], cwd=out, capture_output=True, text=True)
-        if r.returncode:
-            raise RuntimeError(r.stderr)
+        p = start(run, ["ffmpeg", "-v", "error", "-y", "-i", "dbg.mp4", "-c:v", "libx264", "-crf", "20",
+                        "-pix_fmt", "yuv420p", "debug.mp4"], cwd=out, stderr=subprocess.PIPE, text=True)
+        if p.wait():
+            raise RuntimeError(p.stderr.read())
         (out / "dbg.mp4").unlink()
         job.update(state="done", log="\n".join(log))
     except Exception as e:
-        job.update(state="error", error=str(e) or repr(e))
+        if job["state"] == "cancelling":
+            if job["stage"] == "encode":  # a half-written debug.mp4 would look done
+                (out / "debug.mp4").unlink(missing_ok=True)
+            (out / "dbg.mp4").unlink(missing_ok=True)
+            job["state"] = "cancelled"
+        else:
+            job.update(state="error", error=str(e) or repr(e))
+    finally:
+        procs.pop(run, None)
+
+
+def start(run: str, cmd: list[str], **kw) -> subprocess.Popen:
+    """Popen, registered for DELETE /api/debug/{run}; refuses to start once the job is being cancelled."""
+    if jobs[run]["state"] == "cancelling":
+        raise RuntimeError("cancelled")
+    p = procs[run] = subprocess.Popen(cmd, **kw)
+    if jobs[run]["state"] == "cancelling":  # cancelled between the check and procs[run]: the DELETE missed p
+        p.kill()
+    return p
+
+
+@app.delete("/api/debug/{run}")
+def cancel_debug(run: str):
+    """Kill a running job; it turns "cancelled" once its process is gone."""
+    job = jobs.get(run)
+    if not job or job["state"] != "running":
+        raise HTTPException(409, f"{run} is not running")
+    job["state"] = "cancelling"
+    if p := procs.get(run):
+        p.kill()
+    return job
 
 
 def run_dir(run: str) -> Path:
@@ -306,6 +340,12 @@ def run_dir(run: str) -> Path:
     if d.parent != RUNS:  # blocks ../ traversal
         raise HTTPException(404, "no such run")
     return d
+
+
+@app.get("/api/debug")
+def list_debug():
+    """Every job since the server started, oldest first: run name -> status."""
+    return dict(jobs)
 
 
 @app.get("/api/debug/{run}")
