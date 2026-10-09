@@ -119,6 +119,8 @@ assert dict(c.get("/api/runs/v9_stats").json()["stats"]) == {
     "Median speed (km/h)": 20.0, "Max speed (km/h)": 60.0,
     "Left player average speed (km/h)": "35.0 (2 shots)", "Right player average speed (km/h)": "20.0 (1 shot)",
     "Rejected bounce candidates": "3 (2 bends up, 1 paddle hit)"}
+info = c.get("/api/runs/v9_stats").json()  # each pair's two bounces, shared ones once
+assert info["bounces"] == [[0, 0], [2, 1]] and info["table_m"] == [2.8, 1.3], info
 assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
     "Detections": 1, "Frames with a detection": 1, "Tracks": 2, "Tracked frames": 2, "Rallies": 0,
     "Longest rally (bounce pairs)": 0, "Bounce pairs measured": 0, "Rejected bounce candidates": "1 (1 x)"}

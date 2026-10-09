@@ -79,6 +79,10 @@
 <section id="run" class="hidden">
   <h2 id="runname"></h2>
   <table style="margin-bottom: 16px"><tbody id="runstats"></tbody></table>
+  <figure id="bouncefig">
+    <canvas id="heatmap" style="max-width: 100%"></canvas>
+    <figcaption id="bouncecap"></figcaption>
+  </figure>
   <video id="runvideo" controls preload="metadata"></video>
   <p id="novideo" class="hidden">No debug video in this run. Make one under <a href="#">Debug video</a>.</p>
   <h3>Files</h3>
@@ -306,6 +310,9 @@ async function showRun(name) {
     const tr = document.createElement('tr'), th = document.createElement('th'), td = document.createElement('td');
     th.textContent = k; td.textContent = v; tr.append(th, td); return tr;
   }));
+  const pts = r?.bounces || [];
+  $('bouncefig').classList.toggle('hidden', !pts.length);
+  if (pts.length) drawHeatmap(pts, r.table_m);
   if (!r) $('runname').textContent = `${name}: no such run`;
   $('runvideo').classList.toggle('hidden', !vid);
   $('novideo').classList.toggle('hidden', vid || !r);
@@ -314,6 +321,36 @@ async function showRun(name) {
     const li = document.createElement('li'), a = link(runFile(name, f), f);
     a.download = f; li.append(a); return li;
   }));
+}
+
+// top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres)
+function drawHeatmap(pts, [L, W]) {
+  const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 12;  // s: px per metre
+  const w = Math.round(L * s), h = Math.round(W * s), sig = 0.08 * s, R = Math.ceil(3 * sig);
+  c.width = w + 2 * pad; c.height = h + 2 * pad;
+  const dens = new Float32Array(w * h);
+  for (const [X, Y] of pts) {  // a Gaussian blob per bounce, only within 3 sigma
+    const cx = X * s, cy = Y * s;
+    for (let y = Math.max(0, Math.floor(cy - R)); y < Math.min(h, cy + R); y++)
+      for (let x = Math.max(0, Math.floor(cx - R)); x < Math.min(w, cx + R); x++)
+        dens[y * w + x] += Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sig * sig));
+  }
+  let max = 0; for (const v of dens) if (v > max) max = v;
+  const img = g.createImageData(w, h), table = [27, 79, 138];
+  for (let n = 0; n < dens.length; n++) {  // table blue -> yellow -> red with density
+    const v = dens[n] / max, a = Math.min(1, v * 2), heat = [255, 255 * (1 - v), 0];
+    for (let k = 0; k < 3; k++) img.data[4 * n + k] = table[k] * (1 - a) + heat[k] * a;
+    img.data[4 * n + 3] = 255;
+  }
+  g.clearRect(0, 0, c.width, c.height);
+  g.putImageData(img, pad, pad);
+  g.strokeStyle = 'white'; g.lineWidth = 2; g.strokeRect(pad + 1, pad + 1, w - 2, h - 2);  // inside the blue: shows in both themes
+  g.beginPath(); g.moveTo(pad + w / 2, pad); g.lineTo(pad + w / 2, pad + h); g.lineWidth = 3; g.stroke();  // net
+  g.beginPath(); g.moveTo(pad, pad + h / 2); g.lineTo(pad + w, pad + h / 2); g.lineWidth = 1; g.stroke();  // centre line
+  g.fillStyle = 'rgba(255,255,255,0.6)';
+  for (const [X, Y] of pts) { g.beginPath(); g.arc(pad + X * s, pad + Y * s, 2, 0, 2 * Math.PI); g.fill(); }
+  $('bouncecap').textContent = `${pts.length} bounces from measured pairs, seen from above: ` +
+    'left and right as in the video, camera side at the bottom.';
 }
 
 const route = () => {

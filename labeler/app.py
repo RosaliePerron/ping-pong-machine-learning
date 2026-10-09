@@ -25,7 +25,7 @@ RUNS = REPO / "runs"
 MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
-from ball_speed import TABLE_LEN_M  # noqa: E402  x=0 is the table's left end as seen in the video
+from ball_speed import TABLE_LEN_M, TABLE_WID_M  # noqa: E402  x=0 is the table's left end as seen in the video
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -141,8 +141,11 @@ def run_info(run: str):
     d = run_dir(run)
     if not d.is_dir():
         raise HTTPException(404, "no such run")
+    # ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others
+    bounces = sorted({tuple(map(float, r[k].split(","))) for r in read_csv(d / "speeds.csv") or []
+                      for k in ("from_m", "to_m")})
     return {"name": run, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
-            "stats": run_stats(d)}
+            "stats": run_stats(d), "bounces": bounces, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
 
 
 @app.get("/api/runs/{run}/{name}")
