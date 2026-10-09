@@ -71,4 +71,31 @@ assert q["counts"] == {"untracked": 0, "borderline": 1, "rejected": 1}
 assert c.get("/api/queue", params={"mode": "from-run", "videos": "my_clip.mp4", "run": ".."}).status_code == 404
 c.delete("/api/videos/my_clip.mp4/labels/2")
 assert list(c.get("/api/videos/my_clip.mp4/labels").json()) == ["3"]
+
+# debug video: a stand-in ball_speed.py (prints progress, copies the video), then the real ffmpeg
+import time  # noqa: E402
+
+os.makedirs(os.path.join(repo, "models"))
+for v in (2, 10):
+    open(os.path.join(repo, "models", f"ball_net_v{v}.pt"), "w").close()
+open(os.path.join(repo, "models", "ball_net.pt"), "w").close()
+with open(os.path.join(repo, "ball_speed.py"), "w") as fh:
+    fh.write("import shutil, sys\nfor n in (5, 10): print(f'progress detect {n}/10', end='\\r', file=sys.stderr)\n"
+             "print('10 frames')\nshutil.copy(sys.argv[1], sys.argv[sys.argv.index('--debug') + 1])\n")
+assert c.get("/api/models").json() == [2, 10]
+assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 3}).status_code == 404
+assert c.post("/api/debug", json={"video": "../labels.db", "version": 2}).status_code == 404
+assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2}).json() == {"run": "v2_my_clip"}
+for _ in range(100):
+    if (job := c.get("/api/debug/v2_my_clip").json())["state"] != "running":
+        break
+    time.sleep(0.1)
+assert job["state"] == "done", job
+assert job["log"] == "10 frames", job
+r = c.get("/api/debug/v2_my_clip/debug.mp4")
+assert r.headers["content-disposition"] == 'attachment; filename="v2_my_clip.mp4"', r.headers
+assert cv2.VideoCapture(os.path.join(repo, "runs", "v2_my_clip", "debug.mp4")).get(cv2.CAP_PROP_FRAME_COUNT) == 10
+assert not os.path.exists(os.path.join(repo, "runs", "v2_my_clip", "dbg.mp4"))
+assert c.get("/api/debug/v1_my_clip/debug.mp4").status_code == 404
+assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
 print("ok")

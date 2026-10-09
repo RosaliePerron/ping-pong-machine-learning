@@ -4,7 +4,10 @@ import io
 import os
 import re
 import sqlite3
+import subprocess
 import sys
+import threading
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -18,6 +21,7 @@ VIDEOS.mkdir(parents=True, exist_ok=True)
 EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 REPO = Path(os.environ.get("REPO_DIR", "/repo"))
 RUNS = REPO / "runs"
+MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
 
@@ -169,6 +173,83 @@ def export():
         w.writerow([f"videos/{v}", f, vis, "" if x is None else round(x, 1), "" if y is None else round(y, 1)])
     return Response(out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=labels.csv"})
+
+
+@app.get("/api/models")
+def list_models():
+    """Saved model versions: models/ball_net_vN.pt -> N."""
+    return sorted(int(m[1]) for p in MODELS.glob("ball_net_v*.pt") if (m := re.fullmatch(r"ball_net_v(\d+)\.pt", p.name)))
+
+
+jobs: dict[str, dict] = {}  # run name -> status. ponytail: in memory, lost on restart (finished videos stay in runs/)
+
+
+class DebugJob(BaseModel):
+    video: str
+    version: int
+
+
+@app.post("/api/debug")
+def start_debug(job: DebugJob):
+    """debug.sh VIDEO VERSION in the background, into runs/vVERSION_VIDEO/; poll GET /api/debug/{run}."""
+    video, model = video_path(job.video), MODELS / f"ball_net_v{job.version}.pt"
+    if not model.is_file():
+        raise HTTPException(404, f"no model v{job.version}")
+    run = f"v{job.version}_{video.stem}"
+    if jobs.get(run, {}).get("state") == "running":
+        raise HTTPException(409, f"{run} is already running")
+    jobs[run] = {"state": "running", "stage": "starting", "done": 0, "total": 0}
+    threading.Thread(target=make_debug, args=(run, video, model), daemon=True).start()
+    return {"run": run}
+
+
+def make_debug(run: str, video: Path, model: Path):
+    job, out, log = jobs[run], RUNS / run, deque(maxlen=20)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        p = subprocess.Popen([sys.executable, str(REPO / "ball_speed.py"), str(video), "--model", str(model),
+                              "--debug", "dbg.mp4"], cwd=out, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for line in p.stdout:  # text mode turns ball_speed.py's \r progress into lines
+            if m := re.fullmatch(r"progress (\w+) (\d+)/(\d+)\n", line):
+                job.update(stage=m[1], done=int(m[2]), total=int(m[3]))
+            elif line.strip():
+                log.append(line.rstrip())
+        if p.wait():
+            raise RuntimeError("\n".join(log))
+        job.update(stage="encode", done=0, total=0)
+        # OpenCV writes mp4v, which VLC and browsers can't play: re-encode to H.264, like debug.sh
+        r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", "dbg.mp4", "-c:v", "libx264", "-crf", "20",
+                            "-pix_fmt", "yuv420p", "debug.mp4"], cwd=out, capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError(r.stderr)
+        (out / "dbg.mp4").unlink()
+        job.update(state="done", log="\n".join(log))
+    except Exception as e:
+        job.update(state="error", error=str(e) or repr(e))
+
+
+def run_dir(run: str) -> Path:
+    d = RUNS / run
+    if d.parent != RUNS:  # blocks ../ traversal
+        raise HTTPException(404, "no such run")
+    return d
+
+
+@app.get("/api/debug/{run}")
+def debug_status(run: str):
+    if run in jobs:
+        return jobs[run]
+    if (run_dir(run) / "debug.mp4").is_file():
+        return {"state": "done"}
+    raise HTTPException(404, "no such job")
+
+
+@app.get("/api/debug/{run}/debug.mp4")
+def debug_video(run: str):
+    p = run_dir(run) / "debug.mp4"
+    if not p.is_file():
+        raise HTTPException(404, "no debug video yet")
+    return FileResponse(p, media_type="video/mp4", filename=f"{run}.mp4")
 
 
 @app.get("/")

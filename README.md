@@ -46,6 +46,8 @@ This runs `videos/1948.mp4` through `models/ball_net_v3.pt` and writes everythin
 - `debug.mp4`: annotated video (re-encoded to H.264 so VLC can play it). Needs `ffmpeg`.
 - `track.csv`, `speeds.csv`, `detections.csv`, `rejected.csv`: the run's data. The labelling modes below read these files.
 
+The web labeller does the same under **Debug video**: choose the video and model version, wait for the progress bar, then click **Download debug.mp4**. It runs on the GPU in the container. It writes to the same `runs/v3_1948/` folder, owned by root.
+
 To test the model you just trained before giving it a version number, call `ball_speed.py` directly:
 
 ```sh

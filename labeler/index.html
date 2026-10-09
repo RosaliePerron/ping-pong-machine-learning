@@ -37,6 +37,14 @@
     <button>Upload video</button> <span id="upmsg"></span>
   </form>
 
+  <h2>Debug video</h2>
+  <form id="debug">
+    <label>Video <input name="video" id="dbgvideo" placeholder="1948.mp4" required size="14"></label>
+    <label>Model <select name="version" id="dbgversion"></select></label>
+    <button>Make debug video</button>
+    <progress id="dbgbar" class="hidden"></progress> <span id="dbgmsg"></span>
+  </form>
+
   <h2>Start labelling</h2>
   <form id="start">
     <fieldset>
@@ -119,6 +127,7 @@ function fillRuns() {
   $('max-opt').classList.toggle('hidden', mode !== 'false-positives');
   // runs are named like v3_1902: show the ones made from the picked video first
   $('picked').textContent = [...picked].join(', ') || 'none';
+  if (picked.size) $('dbgvideo').value = [...picked][0];
   const stem = ([...picked][0] || '').replace(/\.[^.]+$/, '');
   const ok = runs.filter(r => r.modes.includes(mode))
     .sort((a, b) => (b.name.endsWith(stem) && stem ? 1 : 0) - (a.name.endsWith(stem) && stem ? 1 : 0));
@@ -136,6 +145,33 @@ $('upload').onsubmit = async e => {
     await api('/api/videos', { method: 'POST', body: new FormData(e.target) });
     $('upmsg').textContent = 'done'; e.target.reset(); showList();
   } catch (err) { $('upmsg').textContent = err.message; }
+};
+
+// ---- debug video (debug.sh VIDEO VERSION) ----
+api('/api/models').then(vs => $('dbgversion').replaceChildren(...vs.reverse().map(v => new Option(`v${v}`, v))));
+
+$('debug').onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target, msg = $('dbgmsg'), bar = $('dbgbar');
+  f.querySelector('button').disabled = true;
+  try {
+    const { run } = await api('/api/debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video: f.video.value.trim(), version: +f.version.value }) });
+    bar.classList.remove('hidden');
+    for (;;) {
+      const j = await api(`/api/debug/${encodeURIComponent(run)}`);
+      if (j.state === 'error') throw new Error(j.error);
+      if (j.state === 'done') {
+        bar.classList.add('hidden');
+        msg.innerHTML = `${run}: <a href="/api/debug/${encodeURIComponent(run)}/debug.mp4" download>Download debug.mp4</a>`;
+        break;
+      }
+      if (j.total) { bar.max = j.total; bar.value = j.done; } else bar.removeAttribute('value');  // no value = busy
+      msg.textContent = `${run}: ${j.stage}` + (j.total ? ` ${Math.round(100 * j.done / j.total)}%` : '…');
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch (err) { bar.classList.add('hidden'); msg.textContent = err.message; }
+  f.querySelector('button').disabled = false;
 };
 
 $('start').onsubmit = e => {
