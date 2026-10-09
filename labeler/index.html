@@ -51,18 +51,20 @@
       <label><input type="radio" name="mode" value="from-run"> Where the model lost the ball (<code>--from-run</code>)</label><br>
       <label><input type="radio" name="mode" value="false-positives"> Detections that are probably not the ball (<code>--false-positives</code>)</label>
     </fieldset>
-    <fieldset id="plan-opts">
-      <label>Runs <input name="runs" type="number" min="1" value="40" style="width: 5em"></label>
-      <label>Frames per run <input name="run_len" type="number" min="1" value="10" style="width: 5em"></label>
-    </fieldset>
-    <fieldset id="run-opts" class="hidden">
-      <label>ball_speed.py run <select name="run" id="run"></select></label>
-      <label id="max-opt">Max frames <input name="max_frames" type="number" min="1" value="150" style="width: 5em"></label>
+    <fieldset>
+      <span id="plan-opts">
+        <label>Runs <input name="runs" type="number" min="1" value="40" style="width: 5em"></label>
+        <label>Frames per run <input name="run_len" type="number" min="1" value="10" style="width: 5em"></label>
+      </span>
+      <span id="run-opts" class="hidden">
+        <label>ball_speed.py run <select name="run" id="run"></select></label>
+        <label id="max-opt">Max frames <input name="max_frames" type="number" min="1" value="150" style="width: 5em"></label>
+      </span>
+      <button>Start</button> <span id="startmsg"></span>
     </fieldset>
     <table><thead><tr><th></th><th>Video</th><th>Frames</th><th>Labelled</th></tr></thead><tbody id="videos"></tbody></table>
     <p><button type="button" id="prevpage">‹ Prev</button> <span id="pageinfo"></span>
       <button type="button" id="nextpage">Next ›</button> · selected: <span id="picked">none</span></p>
-    <p><button>Start</button> <span id="startmsg"></span></p>
   </form>
 </section>
 
