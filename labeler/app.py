@@ -202,6 +202,8 @@ def start_debug(job: DebugJob):
     video, model = video_path(job.video), MODELS / f"ball_net_v{job.version}.pt"
     if not model.is_file():
         raise HTTPException(404, f"no model v{job.version}")
+    if train_lock.locked():  # both want the GPU, and training rewrites models/
+        raise HTTPException(409, "a training is running; wait for it to finish")
     run = f"v{job.version}_{video.stem}"
     if jobs.get(run, {}).get("state") in ("running", "cancelling"):
         raise HTTPException(409, f"{run} is already running")

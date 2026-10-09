@@ -20,6 +20,7 @@ for name, text in {"track.csv": "track,frame,t_s,x_px,y_px\n0,1,0,9,9\n1,6,0,9,9
         fh.write(text)
 from fastapi.testclient import TestClient  # noqa: E402
 
+import app as app_module  # noqa: E402
 from app import app  # noqa: E402
 
 src = os.path.join(os.environ["DATA_DIR"], "src.mp4")
@@ -103,6 +104,8 @@ assert cv2.VideoCapture(os.path.join(repo, "runs", "v2_my_clip", "debug.mp4")).g
 assert not os.path.exists(os.path.join(repo, "runs", "v2_my_clip", "dbg.mp4"))
 assert c.get("/api/debug/v1_my_clip/debug.mp4").status_code == 404
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
+with app_module.train_lock:  # as if a training were running
+    assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2}).status_code == 409
 
 # cancel: a stand-in ball_speed.py that never finishes gets killed
 with open(os.path.join(repo, "ball_speed.py"), "w") as fh:

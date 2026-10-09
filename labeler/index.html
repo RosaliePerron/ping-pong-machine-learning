@@ -205,7 +205,8 @@ pollDebug();  // jobs started before this page loaded
 // ---- training (train_ball.py) ----
 async function pollTrain() {
   const btn = $('train').querySelector('button'), msg = $('trainmsg'), bar = $('trainbar');
-  btn.disabled = true; bar.classList.remove('hidden');
+  const dbgBtn = $('debug').querySelector('button');  // the server refuses debug videos while training, too
+  btn.disabled = dbgBtn.disabled = true; bar.classList.remove('hidden');
   try {
     for (;;) {
       const j = await api('/api/train');
@@ -217,7 +218,7 @@ async function pollTrain() {
       await new Promise(r => setTimeout(r, 2000));
     }
   } catch (err) { msg.textContent = err.message; }
-  bar.classList.add('hidden'); btn.disabled = false;
+  bar.classList.add('hidden'); btn.disabled = dbgBtn.disabled = false;
 }
 $('train').onsubmit = async e => {
   e.preventDefault();
