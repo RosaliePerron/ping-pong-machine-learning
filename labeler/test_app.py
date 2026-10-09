@@ -9,7 +9,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ["DATA_DIR"] = tempfile.mkdtemp()
 os.environ["REPO_DIR"] = repo = tempfile.mkdtemp()
-shutil.copy(os.path.join(HERE, "..", "label_ball.py"), repo)
+for f in ("label_ball.py", "ball_speed.py"):
+    shutil.copy(os.path.join(HERE, "..", f), repo)
 run = os.path.join(repo, "runs", "v1_my_clip")
 os.makedirs(run)
 for name, text in {"track.csv": "track,frame,t_s,x_px,y_px\n0,1,0,9,9\n1,6,0,9,9\n",
@@ -32,6 +33,7 @@ c = TestClient(app)
 with open(src, "rb") as fh:
     assert c.post("/api/videos", files={"file": ("my clip.mp4", fh)}).json() == {"name": "my_clip.mp4"}
 assert c.post("/api/videos", files={"file": ("x.txt", b"hi")}).status_code == 400
+assert 'type="file"' not in c.get("/").text  # upload is API only: no form on the page
 assert c.get("/api/videos").json() == {
     "videos": [{"name": "my_clip.mp4", "frames": 10, "labeled": 0}], "total": 1, "page": 1, "per_page": 25}
 extras = ("999.mp4", "1000.mp4", "1000b.mp4")
@@ -61,7 +63,8 @@ clip = os.path.join(os.environ["DATA_DIR"], "videos", "my_clip.mp4")
 q = c.get("/api/queue", params={"mode": "plan", "videos": "my_clip.mp4", "runs": 3, "run_len": 4}).json()
 assert [it["frame"] for it in q["items"]] == [f for _, f in label_ball.plan([clip], 3, 4)]
 assert c.get("/api/queue", params={"mode": "plan", "videos": "my_clip.mp4", "run_len": 10}).status_code == 400
-assert c.get("/api/runs").json() == [{"name": "v1_my_clip", "modes": ["from-run", "false-positives"]}]
+assert c.get("/api/runs").json() == [{"name": "v1_my_clip", "modes": ["from-run", "false-positives"],
+                                      "files": ["detections.csv", "rejected.csv", "speeds.csv", "track.csv"]}]
 q = c.get("/api/queue", params={"mode": "from-run", "videos": "my_clip.mp4", "run": "v1_my_clip"}).json()
 assert [it["frame"] for it in q["items"]] == [2, 3, 4], q
 q = c.get("/api/queue", params={"mode": "false-positives", "videos": "my_clip.mp4", "run": "v1_my_clip"}).json()
@@ -97,7 +100,35 @@ assert r.headers["content-disposition"] == 'attachment; filename="v2_my_clip.mp4
 assert cv2.VideoCapture(os.path.join(repo, "runs", "v2_my_clip", "debug.mp4")).get(cv2.CAP_PROP_FRAME_COUNT) == 10
 assert not os.path.exists(os.path.join(repo, "runs", "v2_my_clip", "dbg.mp4"))
 assert c.get("/api/debug/v1_my_clip/debug.mp4").status_code == 404
+# run page: plays debug.mp4 inline, seekable
+r = c.get("/api/runs/v2_my_clip/debug.mp4", headers={"Range": "bytes=0-9"})
+assert r.status_code == 206 and len(r.content) == 10, r
+assert r.headers["content-disposition"].startswith("inline"), r.headers
+assert c.get("/api/runs/v1_my_clip/track.csv").text.startswith("track,frame")
+for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", "..%2Fmodels/ball_net.pt", "v1_my_clip/%2E"):
+    assert c.get(f"/api/runs/{bad}").status_code == 404, bad
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
+
+# run page stats: two pairs 0.1 s apart are one rally, a 3+ s pause starts the next
+stats_run = os.path.join(repo, "runs", "v9_stats")
+os.makedirs(stats_run)
+with open(os.path.join(stats_run, "speeds.csv"), "w") as fh:
+    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,1,"0,0","2,1",1,0.5,10\n'  # lands right: left player
+             '0,1.6,"2,1","0,0",1,0.5,20\n1,10,"0,0","2,1",1,0.5,60\n')
+with open(os.path.join(stats_run, "rejected.csv"), "w") as fh:
+    fh.write("frame,x_px,y_px,reason\n1,0,0,bends up\n2,0,0,paddle hit\n3,0,0,bends up\n")
+assert dict(c.get("/api/runs/v9_stats").json()["stats"]) == {
+    "Rallies": 2, "Longest rally (bounce pairs)": 2, "Bounce pairs measured": 3, "Average speed (km/h)": 30.0,
+    "Median speed (km/h)": 20.0, "Max speed (km/h)": 60.0,
+    "Left player average speed (km/h)": "35.0 (2 shots)", "Right player average speed (km/h)": "20.0 (1 shot)",
+    "Rejected bounce candidates": "3 (2 bends up, 1 paddle hit)"}
+info = c.get("/api/runs/v9_stats").json()  # each pair's two bounces, shared ones once
+assert info["bounces"] == [[0, 0], [2, 1]] and info["table_m"] == [2.8, 1.3], info
+assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
+    "Detections": 1, "Frames with a detection": 1, "Tracks": 2, "Tracked frames": 2, "Rallies": 0,
+    "Longest rally (bounce pairs)": 0, "Bounce pairs measured": 0, "Rejected bounce candidates": "1 (1 x)"}
+assert c.get("/api/runs/nope").status_code == 404
+assert c.get("/api/runs/..").status_code == 404
 
 # training: stand-in train_ball.py prints epochs, checks it got the database's labels, writes a new ball_net.pt
 with open(os.path.join(repo, "train_ball.py"), "w") as fh:

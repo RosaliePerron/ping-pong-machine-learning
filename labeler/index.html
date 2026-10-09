@@ -10,6 +10,7 @@
   header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
   h1 { font-size: 1.2rem; margin: 0; }
   h2 { font-size: 1rem; }
+  hr { margin: 24px 0; }
   table { border-collapse: collapse; }
   td, th { padding: 4px 12px; text-align: left; }
   fieldset { margin-bottom: 8px; }
@@ -19,6 +20,7 @@
   #cur { width: 14px; height: 14px; border: 2px solid red; border-radius: 50%; }
   #prev { color: cyan; font: 24px monospace; line-height: 1; }
   #guess { width: 40px; height: 40px; border: 2px solid yellow; border-radius: 50%; }
+  #runvideo { display: block; max-width: 100%; max-height: 80vh; }
   #status { font-variant-numeric: tabular-nums; }
   .hidden { display: none; }
   kbd { border: 1px solid; border-radius: 3px; padding: 0 4px; }
@@ -28,16 +30,14 @@
 <header>
   <h1><a href="#">Frame Labeler</a></h1>
   <label>Your name <input id="who" size="12"></label>
+  <a href="#/runs">Runs</a>
   <a href="/api/labels.csv">Download labels.csv</a>
 </header>
 
 <section id="list">
-  <form id="upload">
-    <input type="file" name="file" accept="video/*" required>
-    <button>Upload video</button> <span id="upmsg"></span>
-  </form>
-
+  <hr>
   <h2>Debug video</h2>
+  <p><a href="#/runs">See all runs and watch their debug videos →</a></p>
   <form id="debug">
     <label>Video <input name="video" id="dbgvideo" placeholder="1948.mp4" required size="14"></label>
     <label>Model <select name="version" id="dbgversion"></select></label>
@@ -45,6 +45,7 @@
     <progress id="dbgbar" class="hidden"></progress> <span id="dbgmsg"></span>
   </form>
 
+  <hr>
   <h2>Train a new model</h2>
   <p>Saves <code>labels.csv</code> as <code>labels_vN.csv</code> (N = latest model), replaces it with the labels
     from this app, runs <code>train_ball.py</code> and saves the result as the next <code>ball_net_vN.pt</code>.</p>
@@ -53,6 +54,7 @@
     <progress id="trainbar" class="hidden"></progress> <span id="trainmsg"></span>
   </form>
 
+  <hr>
   <h2>Start labelling</h2>
   <form id="start">
     <fieldset>
@@ -61,19 +63,39 @@
       <label><input type="radio" name="mode" value="from-run"> Where the model lost the ball (<code>--from-run</code>)</label><br>
       <label><input type="radio" name="mode" value="false-positives"> Detections that are probably not the ball (<code>--false-positives</code>)</label>
     </fieldset>
-    <fieldset id="plan-opts">
-      <label>Runs <input name="runs" type="number" min="1" value="40" style="width: 5em"></label>
-      <label>Frames per run <input name="run_len" type="number" min="1" value="10" style="width: 5em"></label>
-    </fieldset>
-    <fieldset id="run-opts" class="hidden">
-      <label>ball_speed.py run <select name="run" id="run"></select></label>
-      <label id="max-opt">Max frames <input name="max_frames" type="number" min="1" value="150" style="width: 5em"></label>
+    <fieldset>
+      <span id="plan-opts">
+        <label>Runs <input name="runs" type="number" min="1" value="40" style="width: 5em"></label>
+        <label>Frames per run <input name="run_len" type="number" min="1" value="10" style="width: 5em"></label>
+      </span>
+      <span id="run-opts" class="hidden">
+        <label>ball_speed.py run <select name="run" id="run"></select></label>
+        <label id="max-opt">Max frames <input name="max_frames" type="number" min="1" value="150" style="width: 5em"></label>
+      </span>
+      <button>Start</button> <span id="startmsg"></span>
     </fieldset>
     <table><thead><tr><th></th><th>Video</th><th>Frames</th><th>Labelled</th></tr></thead><tbody id="videos"></tbody></table>
     <p><button type="button" id="prevpage">‹ Prev</button> <span id="pageinfo"></span>
       <button type="button" id="nextpage">Next ›</button> · selected: <span id="picked">none</span></p>
-    <p><button>Start</button> <span id="startmsg"></span></p>
   </form>
+</section>
+
+<section id="runs" class="hidden">
+  <h2>Runs</h2>
+  <table><thead><tr><th>Run</th><th>Debug video</th><th>Files</th></tr></thead><tbody id="runlist"></tbody></table>
+</section>
+
+<section id="run" class="hidden">
+  <h2 id="runname"></h2>
+  <table style="margin-bottom: 16px"><tbody id="runstats"></tbody></table>
+  <figure id="bouncefig">
+    <canvas id="heatmap" style="max-width: 100%"></canvas>
+    <figcaption id="bouncecap"></figcaption>
+  </figure>
+  <video id="runvideo" controls preload="metadata"></video>
+  <p id="novideo" class="hidden">No debug video in this run. Make one under <a href="#">Debug video</a>.</p>
+  <h3>Files</h3>
+  <ul id="runfiles"></ul>
 </section>
 
 <section id="labeler" class="hidden">
@@ -103,8 +125,12 @@ async function api(path, opts) {
 }
 
 // ---- list / queue setup ----
+function showSection(id) {
+  for (const s of document.querySelectorAll('body > section')) s.classList.toggle('hidden', s.id !== id);
+}
+
 async function showList() {
-  $('labeler').classList.add('hidden'); $('list').classList.remove('hidden');
+  showSection('list');
   const [res, rs] = await Promise.all([api(`/api/videos?page=${page}`), api('/api/runs')]);
   runs = rs;
   const pages = Math.max(1, Math.ceil(res.total / res.per_page));
@@ -146,15 +172,6 @@ for (const r of document.querySelectorAll('[name=mode]')) r.onchange = showList;
 $('prevpage').onclick = () => { page--; showList(); };
 $('nextpage').onclick = () => { page++; showList(); };
 
-$('upload').onsubmit = async e => {
-  e.preventDefault();
-  $('upmsg').textContent = 'uploading…';
-  try {
-    await api('/api/videos', { method: 'POST', body: new FormData(e.target) });
-    $('upmsg').textContent = 'done'; e.target.reset(); showList();
-  } catch (err) { $('upmsg').textContent = err.message; }
-};
-
 // ---- debug video (debug.sh VIDEO VERSION) ----
 const loadModels = () => api('/api/models').then(vs => $('dbgversion').replaceChildren(...vs.reverse().map(v => new Option(`v${v}`, v))));
 loadModels();
@@ -172,7 +189,8 @@ $('debug').onsubmit = async e => {
       if (j.state === 'error') throw new Error(j.error);
       if (j.state === 'done') {
         bar.classList.add('hidden');
-        msg.innerHTML = `${run}: <a href="/api/debug/${encodeURIComponent(run)}/debug.mp4" download>Download debug.mp4</a>`;
+        msg.innerHTML = `<a href="#/runs/${encodeURIComponent(run)}">${run}</a>: ` +
+          `<a href="/api/debug/${encodeURIComponent(run)}/debug.mp4" download>Download debug.mp4</a>`;
         break;
       }
       if (j.total) { bar.max = j.total; bar.value = j.done; } else bar.removeAttribute('value');  // no value = busy
@@ -228,7 +246,7 @@ async function refreshLabels() {
 }
 
 async function openQueue(q) {
-  $('list').classList.add('hidden'); $('labeler').classList.remove('hidden');
+  showSection('labeler');
   $('status').textContent = 'picking frames…'; $('keys').textContent = '';
   try { ({ items, counts } = await api(`/api/queue?${q}`)); }
   catch (err) { $('status').textContent = err.message; return; }
@@ -302,7 +320,82 @@ addEventListener('keydown', e => {
   else if (e.key === 'ArrowRight') show(i + 1);
 });
 
-const route = () => location.hash.length > 1 ? openQueue(location.hash.slice(1)) : showList();
+// ---- runs (ball_speed.py output folders) ----
+const runFile = (run, f) => `/api/runs/${encodeURIComponent(run)}/${encodeURIComponent(f)}`;
+const link = (href, text) => Object.assign(document.createElement('a'), { href, textContent: text });
+
+async function showRuns() {
+  showSection('runs');
+  const rs = await api('/api/runs');
+  $('runlist').replaceChildren(...rs.map(r => {
+    const tr = document.createElement('tr');
+    tr.append(...[link(`#/runs/${encodeURIComponent(r.name)}`, r.name), r.files.includes('debug.mp4') ? 'yes' : '',
+      r.files.join(', ')].map(x => { const td = document.createElement('td'); td.append(x); return td; }));
+    return tr;
+  }));
+}
+
+async function showRun(name) {
+  showSection('run');
+  $('runname').textContent = name;
+  $('runstats').replaceChildren();
+  const r = await api(`/api/runs/${encodeURIComponent(name)}`).catch(() => null);
+  const files = r?.files || [], vid = files.includes('debug.mp4');
+  $('runstats').replaceChildren(...(r?.stats || []).map(([k, v]) => {
+    const tr = document.createElement('tr'), th = document.createElement('th'), td = document.createElement('td');
+    th.textContent = k; td.textContent = v; tr.append(th, td); return tr;
+  }));
+  const pts = r?.bounces || [];
+  $('bouncefig').classList.toggle('hidden', !pts.length);
+  if (pts.length) drawHeatmap(pts, r.table_m);
+  if (!r) $('runname').textContent = `${name}: no such run`;
+  $('runvideo').classList.toggle('hidden', !vid);
+  $('novideo').classList.toggle('hidden', vid || !r);
+  if (vid) $('runvideo').src = runFile(name, 'debug.mp4'); else $('runvideo').removeAttribute('src');
+  $('runfiles').replaceChildren(...files.map(f => {
+    const li = document.createElement('li'), a = link(runFile(name, f), f);
+    a.download = f; li.append(a); return li;
+  }));
+}
+
+// top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres)
+function drawHeatmap(pts, [L, W]) {
+  const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 12;  // s: px per metre
+  const w = Math.round(L * s), h = Math.round(W * s), sig = 0.08 * s, R = Math.ceil(3 * sig);
+  c.width = w + 2 * pad; c.height = h + 2 * pad;
+  const dens = new Float32Array(w * h);
+  for (const [X, Y] of pts) {  // a Gaussian blob per bounce, only within 3 sigma
+    const cx = X * s, cy = Y * s;
+    for (let y = Math.max(0, Math.floor(cy - R)); y < Math.min(h, cy + R); y++)
+      for (let x = Math.max(0, Math.floor(cx - R)); x < Math.min(w, cx + R); x++)
+        dens[y * w + x] += Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sig * sig));
+  }
+  let max = 0; for (const v of dens) if (v > max) max = v;
+  const img = g.createImageData(w, h), table = [27, 79, 138];
+  for (let n = 0; n < dens.length; n++) {  // table blue -> yellow -> red with density
+    const v = dens[n] / max, a = Math.min(1, v * 2), heat = [255, 255 * (1 - v), 0];
+    for (let k = 0; k < 3; k++) img.data[4 * n + k] = table[k] * (1 - a) + heat[k] * a;
+    img.data[4 * n + 3] = 255;
+  }
+  g.clearRect(0, 0, c.width, c.height);
+  g.putImageData(img, pad, pad);
+  g.strokeStyle = 'white'; g.lineWidth = 2; g.strokeRect(pad + 1, pad + 1, w - 2, h - 2);  // inside the blue: shows in both themes
+  g.beginPath(); g.moveTo(pad + w / 2, pad); g.lineTo(pad + w / 2, pad + h); g.lineWidth = 3; g.stroke();  // net
+  g.beginPath(); g.moveTo(pad, pad + h / 2); g.lineTo(pad + w, pad + h / 2); g.lineWidth = 1; g.stroke();  // centre line
+  g.fillStyle = 'rgba(255,255,255,0.6)';
+  for (const [X, Y] of pts) { g.beginPath(); g.arc(pad + X * s, pad + Y * s, 2, 0, 2 * Math.PI); g.fill(); }
+  $('bouncecap').textContent = `${pts.length} bounces from measured pairs, seen from above: ` +
+    'left and right as in the video, camera side at the bottom.';
+}
+
+const route = () => {
+  const h = location.hash.slice(1);
+  $('runvideo').pause();  // hidden sections keep playing otherwise
+  if (h === '/runs') showRuns();
+  else if (h.startsWith('/runs/')) showRun(decodeURIComponent(h.slice(6)));
+  else if (h) openQueue(h);
+  else showList();
+};
 addEventListener('hashchange', route);
 route();
 </script>
