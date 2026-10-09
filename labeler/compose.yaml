@@ -8,7 +8,3 @@ services:
       - ${REPO_DIR:-..}:/repo:ro  # label_ball.py (frame picking), ball_speed.py + models/ (debug videos)
       - ${REPO_DIR:-..}/runs:/repo/runs  # ball_speed.py outputs; debug videos are written here
     restart: unless-stopped
-    deploy:  # GPU for debug videos; needs nvidia-container-toolkit. Remove this block to run them on CPU.
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]

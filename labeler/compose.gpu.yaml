@@ -1,0 +1,8 @@
+# GPU for debug videos, on hosts with nvidia-container-toolkit:
+#   docker compose -f compose.yaml -f compose.gpu.yaml up -d --build
+services:
+  labeler:
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
