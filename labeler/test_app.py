@@ -86,10 +86,15 @@ assert c.get("/api/models").json() == [2, 10]
 assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 3}).status_code == 404
 assert c.post("/api/debug", json={"video": "../labels.db", "version": 2}).status_code == 404
 assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2}).json() == {"run": "v2_my_clip"}
+assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 10}).json() == {"run": "v10_my_clip"}  # at once
 for _ in range(100):
-    if (job := c.get("/api/debug/v2_my_clip").json())["state"] != "running":
+    jobs = c.get("/api/debug").json()
+    if all(j["state"] != "running" for j in jobs.values()):
         break
     time.sleep(0.1)
+assert list(jobs) == ["v2_my_clip", "v10_my_clip"], jobs
+assert jobs["v10_my_clip"]["state"] == "done", jobs
+job = c.get("/api/debug/v2_my_clip").json()
 assert job["state"] == "done", job
 assert job["log"] == "10 frames", job
 r = c.get("/api/debug/v2_my_clip/debug.mp4")

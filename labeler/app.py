@@ -204,6 +204,7 @@ def start_debug(job: DebugJob):
     run = f"v{job.version}_{video.stem}"
     if jobs.get(run, {}).get("state") == "running":
         raise HTTPException(409, f"{run} is already running")
+    jobs.pop(run, None)  # a re-run moves to the end of the list
     jobs[run] = {"state": "running", "stage": "starting", "done": 0, "total": 0}
     threading.Thread(target=make_debug, args=(run, video, model), daemon=True).start()
     return {"run": run}
@@ -239,6 +240,12 @@ def run_dir(run: str) -> Path:
     if d.parent != RUNS:  # blocks ../ traversal
         raise HTTPException(404, "no such run")
     return d
+
+
+@app.get("/api/debug")
+def list_debug():
+    """Every job since the server started, oldest first: run name -> status."""
+    return dict(jobs)
 
 
 @app.get("/api/debug/{run}")

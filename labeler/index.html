@@ -41,9 +41,9 @@
   <form id="debug">
     <label>Video <input name="video" id="dbgvideo" placeholder="1948.mp4" required size="14"></label>
     <label>Model <select name="version" id="dbgversion"></select></label>
-    <button>Make debug video</button>
-    <progress id="dbgbar" class="hidden"></progress> <span id="dbgmsg"></span>
+    <button>Make debug video</button> <span id="dbgmsg"></span>
   </form>
+  <ul id="dbgjobs"></ul>
 
   <h2>Train a new model</h2>
   <p>Saves <code>labels.csv</code> as <code>labels_vN.csv</code> (N = latest model), replaces it with the labels
@@ -159,29 +159,44 @@ $('upload').onsubmit = async e => {
 const loadModels = () => api('/api/models').then(vs => $('dbgversion').replaceChildren(...vs.reverse().map(v => new Option(`v${v}`, v))));
 loadModels();
 
-$('debug').onsubmit = async e => {
-  e.preventDefault();
-  const f = e.target, msg = $('dbgmsg'), bar = $('dbgbar');
-  f.querySelector('button').disabled = true;
+let dbgPolling = false;
+async function pollDebug() {  // one poller for every job; the server keeps the list, so a reload picks it back up
+  if (dbgPolling) return;
+  dbgPolling = true;
   try {
-    const { run } = await api('/api/debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ video: f.video.value.trim(), version: +f.version.value }) });
-    bar.classList.remove('hidden');
     for (;;) {
-      const j = await api(`/api/debug/${encodeURIComponent(run)}`);
-      if (j.state === 'error') throw new Error(j.error);
-      if (j.state === 'done') {
-        bar.classList.add('hidden');
-        msg.innerHTML = `${run}: <a href="/api/debug/${encodeURIComponent(run)}/debug.mp4" download>Download debug.mp4</a>`;
-        break;
-      }
-      if (j.total) { bar.max = j.total; bar.value = j.done; } else bar.removeAttribute('value');  // no value = busy
-      msg.textContent = `${run}: ${j.stage}` + (j.total ? ` ${Math.round(100 * j.done / j.total)}%` : '…');
+      const jobs = Object.entries(await api('/api/debug')).reverse();  // newest first
+      $('dbgjobs').replaceChildren(...jobs.map(([run, j]) => {
+        const li = document.createElement('li'), url = `/api/debug/${encodeURIComponent(run)}/debug.mp4`;
+        if (j.state === 'done') {
+          const a = Object.assign(document.createElement('a'), { href: url, download: '', textContent: 'Download debug.mp4' });
+          li.append(`${run}: `, a);
+        }
+        else if (j.state === 'error') li.textContent = `${run}: ${j.error}`;
+        else {
+          const bar = document.createElement('progress');
+          if (j.total) { bar.max = j.total; bar.value = j.done; }  // no value = busy
+          li.append(`${run}: ${j.stage}` + (j.total ? ` ${Math.round(100 * j.done / j.total)}% ` : '… '), bar);
+        }
+        return li;
+      }));
+      if (!jobs.some(([, j]) => j.state === 'running')) break;
       await new Promise(r => setTimeout(r, 1000));
     }
-  } catch (err) { bar.classList.add('hidden'); msg.textContent = err.message; }
-  f.querySelector('button').disabled = false;
+  } catch (err) { $('dbgmsg').textContent = err.message; }
+  dbgPolling = false;
+}
+$('debug').onsubmit = async e => {
+  e.preventDefault();
+  const f = e.target;
+  $('dbgmsg').textContent = '';
+  try {
+    await api('/api/debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video: f.video.value.trim(), version: +f.version.value }) });
+  } catch (err) { $('dbgmsg').textContent = err.message; return; }
+  pollDebug();
 };
+pollDebug();  // jobs started before this page loaded
 
 // ---- training (train_ball.py) ----
 async function pollTrain() {
