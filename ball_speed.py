@@ -184,15 +184,24 @@ def bounces(tr, H, rejected=None):
     except by rejecting them. Rejected candidates are appended to `rejected` as (frame, x, y, reason).
     """
     out = []
-    reject = (lambda why: rejected.append((f, x, y, why))) if rejected is not None else (lambda why: None)
+    # Off-table candidates are dropped anyway; labelling them only clutters the debug video.
+    reject = ((lambda why: on_table(*to_table(H, x, y)) and rejected.append((f, x, y, why)))
+              if rejected is not None else (lambda why: None))
+    # Paddle hits (screen x velocity reverses, judged on 3-step medians so one wild point can't fake it):
+    # fit windows stop at them, or a hit ~0.1-0.2 s after the bounce bends the "after" parabola upward.
+    vx = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(tr, tr[1:])]
+    hits = [tr[j][0] for j in range(3, len(tr) - 3) if np.median(vx[j - 3 : j]) * np.median(vx[j : j + 3]) < 0]
     for i in range(1, len(tr) - 1):
         (f0, _, y0), (f, x, y), (f2, _, y2) = tr[i - 1], tr[i], tr[i + 1]
         if not (f - f0 == 1 and f2 - f == 1 and y2 - 2 * y + y0 < -KINK_PX):
             continue
         if out and f - out[-1][0] < 4:  # one bounce often kinks on two neighbouring frames
             continue
-        before = [p for p in tr[max(0, i - FIT_WINDOW) : i] if f - p[0] <= FIT_WINDOW]
-        after = [p for p in tr[i + 1 : i + 1 + FIT_WINDOW] if p[0] - f <= FIT_WINDOW]
+        # A reversal at the candidate itself is for the paddle-hit check below, not a window edge.
+        lo = max([h for h in hits if h < f - 2], default=-1)
+        hi = min([h for h in hits if h > f + 2], default=float("inf"))
+        before = [p for p in tr[max(0, i - FIT_WINDOW) : i] if f - p[0] <= FIT_WINDOW and p[0] > lo]
+        after = [p for p in tr[i + 1 : i + 1 + FIT_WINDOW] if p[0] - f <= FIT_WINDOW and p[0] < hi]
         fa = robust_fit(before) if len(before) >= 3 else None
         fb = robust_fit(after) if len(after) >= 3 else None
         if fa is None or fb is None:
