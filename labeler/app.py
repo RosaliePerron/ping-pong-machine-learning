@@ -6,10 +6,11 @@ import filecmp
 import re
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 import threading
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 import cv2
@@ -26,6 +27,7 @@ RUNS = REPO / "runs"
 MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
+from ball_speed import TABLE_LEN_M, TABLE_WID_M  # noqa: E402  x=0 is the table's left end as seen in the video
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -60,6 +62,7 @@ def list_videos(page: int = Query(1, ge=1), per_page: int = Query(25, ge=1, le=2
 
 @app.post("/api/videos")
 def upload(file: UploadFile):
+    """API only: the web page has no upload form, videos normally come from the repo's videos/ folder."""
     name = re.sub(r"[^\w.-]", "_", Path(file.filename or "").name)
     if Path(name).suffix.lower() not in EXTS:
         raise HTTPException(400, f"expected one of {sorted(EXTS)}")
@@ -73,7 +76,6 @@ def upload(file: UploadFile):
         dest.unlink()
         raise HTTPException(400, "could not read video")
     return {"name": name}
-
 
 @app.get("/api/videos/{name}/frames/{frame}.jpg")
 def frame_jpg(name: str, frame: int):
@@ -106,7 +108,72 @@ def run_modes(d: Path) -> list[str]:
 @app.get("/api/runs")
 def list_runs():
     dirs = sorted(d for d in RUNS.iterdir() if d.is_dir()) if RUNS.is_dir() else []
-    return [{"name": d.name, "modes": run_modes(d)} for d in dirs]
+    return [{"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file())}
+            for d in dirs]
+
+
+RALLY_GAP_S = 3  # ponytail: a pause this long between measured bounce pairs starts a new rally; tune if rallies merge/split
+
+
+def read_csv(p: Path) -> list[dict] | None:
+    if not p.is_file():
+        return None
+    with p.open(newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def run_stats(d: Path) -> list[list]:
+    """[label, value] rows for the run page, from whichever ball_speed.py outputs the folder has."""
+    rows = []
+    if (det := read_csv(d / "detections.csv")) is not None:
+        rows += [["Detections", len(det)], ["Frames with a detection", len({r["frame"] for r in det})]]
+    if (trk := read_csv(d / "track.csv")) is not None:
+        rows += [["Tracks", len({r["track"] for r in trk})], ["Tracked frames", len(trk)]]
+    if (spd := read_csv(d / "speeds.csv")) is not None:
+        rallies, end = [], None
+        for r in spd:
+            t, dt = float(r["t_s"]), float(r["dt_s"])
+            if end is None or t - end > RALLY_GAP_S:
+                rallies.append(0)
+            rallies[-1] += 1
+            end = t + dt
+        kmh = [float(r["speed_kmh"]) for r in spd]
+        rows += [["Rallies", len(rallies)], ["Longest rally (bounce pairs)", max(rallies, default=0)],
+                 ["Bounce pairs measured", len(kmh)]]
+        if kmh:
+            rows += [["Average speed (km/h)", round(statistics.mean(kmh), 1)],
+                     ["Median speed (km/h)", round(statistics.median(kmh), 1)], ["Max speed (km/h)", max(kmh)]]
+        # a pair landing on the right half was hit by the left player, and the other way round
+        lands_right = [float(r["to_m"].split(",")[0]) > TABLE_LEN_M / 2 for r in spd]
+        for who, side in (("Left", True), ("Right", False)):
+            mine = [k for k, right in zip(kmh, lands_right) if right == side]
+            if mine:
+                rows.append([f"{who} player average speed (km/h)", f"{statistics.mean(mine):.1f} ({len(mine)} shot{'s' * (len(mine) != 1)})"])
+    if (rej := read_csv(d / "rejected.csv")) is not None:
+        why = ", ".join(f"{n} {k}" for k, n in Counter(r["reason"] for r in rej).most_common())
+        rows.append(["Rejected bounce candidates", f"{len(rej)} ({why})" if rej else 0])
+    return rows
+
+
+@app.get("/api/runs/{run}")
+def run_info(run: str):
+    d = run_dir(run)
+    if not d.is_dir():
+        raise HTTPException(404, "no such run")
+    # ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others
+    bounces = sorted({tuple(map(float, r[k].split(","))) for r in read_csv(d / "speeds.csv") or []
+                      for k in ("from_m", "to_m")})
+    return {"name": run, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
+            "stats": run_stats(d), "bounces": bounces, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
+
+
+@app.get("/api/runs/{run}/{name}")
+def run_file(run: str, name: str):
+    """One file of a run folder; the run page plays debug.mp4 from here (FileResponse handles Range, so seeking works)."""
+    p = run_dir(run) / name
+    if p.parent != RUNS / run or not p.is_file():  # blocks ../ traversal
+        raise HTTPException(404, "no such file")
+    return FileResponse(p, content_disposition_type="inline", filename=name)
 
 
 @app.get("/api/queue")
