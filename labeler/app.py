@@ -25,6 +25,7 @@ RUNS = REPO / "runs"
 MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
+from ball_speed import TABLE_LEN_M  # noqa: E402  x=0 is the table's left end as seen in the video
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -123,6 +124,12 @@ def run_stats(d: Path) -> list[list]:
         if kmh:
             rows += [["Average speed (km/h)", round(statistics.mean(kmh), 1)],
                      ["Median speed (km/h)", round(statistics.median(kmh), 1)], ["Max speed (km/h)", max(kmh)]]
+        # a pair landing on the right half was hit by the left player, and the other way round
+        lands_right = [float(r["to_m"].split(",")[0]) > TABLE_LEN_M / 2 for r in spd]
+        for who, side in (("Left", True), ("Right", False)):
+            mine = [k for k, right in zip(kmh, lands_right) if right == side]
+            if mine:
+                rows.append([f"{who} player average speed (km/h)", f"{statistics.mean(mine):.1f} ({len(mine)} shot{'s' * (len(mine) != 1)})"])
     if (rej := read_csv(d / "rejected.csv")) is not None:
         why = ", ".join(f"{n} {k}" for k, n in Counter(r["reason"] for r in rej).most_common())
         rows.append(["Rejected bounce candidates", f"{len(rej)} ({why})" if rej else 0])

@@ -9,7 +9,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ["DATA_DIR"] = tempfile.mkdtemp()
 os.environ["REPO_DIR"] = repo = tempfile.mkdtemp()
-shutil.copy(os.path.join(HERE, "..", "label_ball.py"), repo)
+for f in ("label_ball.py", "ball_speed.py"):
+    shutil.copy(os.path.join(HERE, "..", f), repo)
 run = os.path.join(repo, "runs", "v1_my_clip")
 os.makedirs(run)
 for name, text in {"track.csv": "track,frame,t_s,x_px,y_px\n0,1,0,9,9\n1,6,0,9,9\n",
@@ -109,13 +110,14 @@ assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
 stats_run = os.path.join(repo, "runs", "v9_stats")
 os.makedirs(stats_run)
 with open(os.path.join(stats_run, "speeds.csv"), "w") as fh:
-    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,1,"0,0","1,1",1,0.5,10\n'
-             '0,1.6,"1,1","0,0",1,0.5,20\n1,10,"0,0","1,1",1,0.5,60\n')
+    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,1,"0,0","2,1",1,0.5,10\n'  # lands right: left player
+             '0,1.6,"2,1","0,0",1,0.5,20\n1,10,"0,0","2,1",1,0.5,60\n')
 with open(os.path.join(stats_run, "rejected.csv"), "w") as fh:
     fh.write("frame,x_px,y_px,reason\n1,0,0,bends up\n2,0,0,paddle hit\n3,0,0,bends up\n")
 assert dict(c.get("/api/runs/v9_stats").json()["stats"]) == {
     "Rallies": 2, "Longest rally (bounce pairs)": 2, "Bounce pairs measured": 3, "Average speed (km/h)": 30.0,
     "Median speed (km/h)": 20.0, "Max speed (km/h)": 60.0,
+    "Left player average speed (km/h)": "35.0 (2 shots)", "Right player average speed (km/h)": "20.0 (1 shot)",
     "Rejected bounce candidates": "3 (2 bends up, 1 paddle hit)"}
 assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
     "Detections": 1, "Frames with a detection": 1, "Tracks": 2, "Tracked frames": 2, "Rallies": 0,
