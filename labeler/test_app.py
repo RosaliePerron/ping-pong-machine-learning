@@ -183,6 +183,7 @@ with open(os.path.join(paths_run, "track.csv"), "w") as fh:
 info = c.get("/api/runs/v9_paths").json()
 assert info["bounces"] == [[0.6, 0.7], [2.2, 0.5]], info
 assert info["paths"][1] == [[2.2, 0.5]], info  # too few points to fit before it: the bounce alone
+assert info["speeds_kmh"] == [7.2, None], info  # the pair ending on it; none ends on a first bounce
 path, true = np.array(info["paths"][0]), [B[:2] + v[:2] * (f / 30 - tb) for f in range(hit_f, 46)]
 assert len(path) >= 9 and (path[-1] == B[:2]).all(), path
 assert all(min(np.hypot(*(p - g)) for g in true) < 0.01 for p in path), path  # on the real ground track

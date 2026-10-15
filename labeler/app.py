@@ -219,10 +219,11 @@ def flight_in(b: tuple, t_b: float, pts: list) -> list:
         tau, px = np.delete(tau, miss.argmax()), np.delete(px, miss.argmax(), 0)
 
 
-def bounce_paths(d: Path) -> tuple[list, list]:
-    """Each bounce once (table metres), and the ground track of the ball's flight into it, ending on the bounce: fitted
-    to track.csv after the last paddle hit since the pair's first bounce (or BOUNCE_DT_S[1] before, for a bounce that
-    only starts a pair). The ball is in the air, so the table homography alone would push it away from the camera.
+def bounce_paths(d: Path) -> tuple[list, list, list]:
+    """Each bounce once (table metres), the speed (km/h) of the measured pair ending on it (None if it only starts
+    one), and the ground track of the ball's flight into it, ending on the bounce: fitted to track.csv after the last
+    paddle hit since the pair's first bounce (or BOUNCE_DT_S[1] before, for a bounce that only starts a pair).
+    The ball is in the air, so the table homography alone would push it away from the camera.
     ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others."""
     spd, trk = read_csv(d / "speeds.csv") or [], read_csv(d / "track.csv") or []
     xy = lambda s: tuple(map(float, s.split(",")))
@@ -238,7 +239,8 @@ def bounce_paths(d: Path) -> tuple[list, list]:
         hit = max(paddle_hits([(f, x, y) for f, _, x, y in pts]), default=-1)
         flight = [(t, x, y) for f, t, x, y in pts if f > hit]
         paths.append((flight_in(b, t1, flight) if len(flight) >= 5 else []) + [list(b)])
-    return bounces, paths
+    kmh = {xy(r["to_m"]): float(r["speed_kmh"]) for r in spd}
+    return bounces, paths, [kmh.get(b) for b in bounces]
 
 
 @app.get("/api/runs/{run}")
@@ -246,9 +248,10 @@ def run_info(run: str):
     d = latest_run(run)
     if not d.is_dir():
         raise HTTPException(404, "no such run")
-    bounces, paths = bounce_paths(d)
+    bounces, paths, kmh = bounce_paths(d)
     return {"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
-            "stats": run_stats(d), "bounces": bounces, "paths": paths, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
+            "stats": run_stats(d), "bounces": bounces, "paths": paths, "speeds_kmh": kmh,
+            "table_m": [TABLE_LEN_M, TABLE_WID_M]}
 
 
 @app.get("/api/runs/{run}/{name}")
