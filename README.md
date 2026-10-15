@@ -52,7 +52,7 @@ The web labeller does the same under **Debug video**: choose the video and model
 
 Every run folder has its own page under **Runs** in the web labeller (`/#/runs`), which plays its `debug.mp4` in the browser and links to its CSV files.
 
-Next to the video, a 3D view replays the ball in step with it. The camera is calibrated from the table corners in `ball_speed.py`. The flights between bounces and paddle hits are fitted from `track.csv` as gravity arcs (`ball_speed.flights()`), pinned to the table at each bounce and joined at each paddle hit. Flights with no bounce to fix their depth (serve tosses, the ball being picked up) are left out. The view starts from the video camera's viewpoint: drag to orbit, double-click to come back.
+Next to the video, a 3D view replays the ball in step with it. The camera is calibrated from the table corners in `ball_speed.py`. The flights between bounces and paddle hits are fitted from `track.csv` as gravity arcs (`ball_speed.flights()`), pinned to the table at each bounce and joined at each paddle hit (solid ball). Every other detection is still shown (see-through ball): serve tosses, the ball being picked up, and stretches where a bounce or hit was missed. It sits on the camera ray through the detection, at a depth guessed from the fitted flights either side (`ball_speed.guessed()`), or on the table's centre line when the track has no fitted flight. The view starts from the video camera's viewpoint: drag to orbit, double-click to come back.
 
 To test the model you just trained before giving it a version number, call `ball_speed.py` directly:
 

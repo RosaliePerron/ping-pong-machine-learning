@@ -173,6 +173,7 @@ with open(os.path.join(stats_run, "track.csv"), "w") as fh:  # one straight flig
     fh.write("track,frame,t_s,x_px,y_px\n" + "".join(f"0,{f},{f / 30:.3f},{600 + 5 * f},300\n" for f in range(10)))
 d = c.get("/api/runs/v9_stats/3d").json()
 assert d["flights"] == [] and d["camera"]["pos"][2] > 1 and 30 < d["camera"]["fov_deg"] < 50, d
+assert [round(q[0], 3) for q in d["guessed"]] == [round(f / 30, 3) for f in range(10)], d  # still shown, depth guessed
 assert c.get("/api/runs/stats/3d").json() == d  # a bare name aliases the highest version, as on the other run routes
 
 # training: stand-in train_ball.py prints epochs, checks it got the database's labels, writes a new ball_net.pt

@@ -446,13 +446,14 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 3));
 // table metres (x along the table, y towards the camera, z up) -> three.js (x right, y up, z towards the viewer)
 const v3 = (x, y, z) => new THREE.Vector3(x, z, y);
 const mesh = (geo, mat, at) => { const m = new THREE.Mesh(geo, mat); m.position.copy(at); scene.add(m); return m; };
-const ball = mesh(new THREE.SphereGeometry(0.025), new THREE.MeshStandardMaterial({ color: 0xff8c1a, emissive: 0x803000 }), v3(0, 0, 0));
+const ball = mesh(new THREE.SphereGeometry(0.025),
+  new THREE.MeshStandardMaterial({ color: 0xff8c1a, emissive: 0x803000, transparent: true }), v3(0, 0, 0));
 const shadow = mesh(new THREE.CircleGeometry(0.025), new THREE.MeshBasicMaterial({ color: 0, transparent: true, opacity: 0.5 }), v3(0, 0, 0));
 shadow.rotation.x = -Math.PI / 2;
 const TRAIL = 20, trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffb060 }));
 trail.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * TRAIL), 3));
 scene.add(trail);
-let flights = [], shown, data, clock0 = performance.now();
+let flights = [], guesses = [], shown, data, clock0 = performance.now();
 
 function buildTable([L, W]) {
   mesh(new THREE.BoxGeometry(L, 0.03, W), new THREE.MeshStandardMaterial({ color: 0x1b4f8a }), v3(L / 2, W / 2, -0.015));
@@ -476,27 +477,37 @@ function cameraView() {  // where the video was filmed from; double-click to com
 $('view3d').ondblclick = () => data && cameraView();
 
 async function load(name) {
-  shown = name; flights = [];
+  shown = name; flights = []; guesses = [];
   $('fig3d').classList.add('hidden');
   const r = await fetch(`/api/runs/${encodeURIComponent(name)}/3d`).catch(() => null);
   if (!r?.ok || shown !== name) return;
   const first = !data;
   data = await r.json();
   if (first) buildTable(data.table_m);
-  if (shown !== name || !data.flights.length) return;
-  flights = data.flights;
+  if (shown !== name || !(data.flights.length || data.guessed.length)) return;
+  flights = data.flights; guesses = data.guessed;
   cameraView();
-  $('cap3d').textContent = `The ball in 3D, ${video.hasAttribute('src') ? 'in step with the video' : 'on its own clock (no debug video)'}: ` +
-    `${flights.length} flights between bounces and paddle hits, fitted as gravity arcs and pinned to the table at the bounces. ` +
+  $('cap3d').textContent = `The ball in 3D, ${video.hasAttribute('src') ? 'in step with the video' : 'on its own clock (no debug video)'}. ` +
+    `Solid: ${flights.length} flights between bounces and paddle hits, fitted as gravity arcs and pinned to the table ` +
+    `at the bounces. See-through: ${guesses.length} detections no flight covers (no bounce, or not a clean arc), ` +
+    'at a depth guessed from the flights either side. ' +
     "Drag to orbit, scroll to zoom, double-click for the video camera's view.";
   $('fig3d').classList.remove('hidden');
 }
 
-function at(t) {  // flight [t0, t1, x, y, z, vx, vy, vz]: at t0 + s the ball is at x + vx s, y + vy s, z + vz s - g s^2 / 2
-  const f = flights.find(f => f[0] <= t && t <= f[1]);
-  if (!f) return null;
-  const s = t - f[0];
-  return v3(f[2] + f[5] * s, f[3] + f[6] * s, f[4] + f[7] * s - G / 2 * s * s);
+function at(t) {  // -> [position, fitted?] or null
+  const f = flights.find(f => f[0] <= t && t <= f[1]);  // [t0, t1, x, y, z, vx, vy, vz]
+  if (f) {  // at t0 + s the ball is at x + vx s, y + vy s, z + vz s - g s^2 / 2
+    const s = t - f[0];
+    return [v3(f[2] + f[5] * s, f[3] + f[6] * s, f[4] + f[7] * s - G / 2 * s * s), true];
+  }
+  const i = guesses.findLastIndex(q => q[0] <= t), a = guesses[i], b = guesses[i + 1];  // [t, x, y, z]
+  if (!a) return null;
+  if (b && b[0] - a[0] < 0.15) {  // detections a few frames apart: in between, slide from one to the next
+    const k = (t - a[0]) / (b[0] - a[0]);
+    return [v3(...[1, 2, 3].map(j => a[j] + k * (b[j] - a[j]))), false];
+  }
+  return t - a[0] < 1 / 30 ? [v3(a[1], a[2], a[3]), false] : null;
 }
 
 renderer.setAnimationLoop(() => {
@@ -504,15 +515,16 @@ renderer.setAnimationLoop(() => {
   if ($('fig3d').classList.contains('hidden') || $('run').classList.contains('hidden')) return;
   const c = renderer.domElement;
   if (c.width !== Math.floor(c.clientWidth * renderer.getPixelRatio())) renderer.setSize(c.clientWidth, c.clientHeight, false);
-  const end = flights[flights.length - 1][1];
+  const end = Math.max(flights.at(-1)?.[1] || 0, guesses.at(-1)?.[0] || 0);
   const t = video.hasAttribute('src') ? video.currentTime : (performance.now() - clock0) / 1000 % end;
-  const p = at(t), [L, W] = data.table_m;
+  const [p, fitted] = at(t) || [], [L, W] = data.table_m;
   ball.visible = shadow.visible = trail.visible = !!p;
   if (p) {
     ball.position.copy(p);
+    ball.material.opacity = fitted ? 1 : 0.35;
     const overTable = p.x >= 0 && p.x <= L && p.z >= 0 && p.z <= W && p.y >= 0;
     shadow.position.set(p.x, overTable ? 0.002 : -0.758, p.z);
-    const pts = [...Array(TRAIL).keys()].map(k => at(t - k / 60)).filter(Boolean), buf = trail.geometry.attributes.position;
+    const pts = [...Array(TRAIL).keys()].map(k => at(t - k / 60)?.[0]).filter(Boolean), buf = trail.geometry.attributes.position;
     pts.forEach((q, k) => buf.setXYZ(k, q.x, q.y, q.z));
     buf.needsUpdate = true;
     trail.geometry.setDrawRange(0, pts.length);

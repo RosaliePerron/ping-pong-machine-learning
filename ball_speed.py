@@ -271,6 +271,7 @@ def camera():
 
 GRAVITY = 9.81  # m/s^2
 JOIN_W = ANCHOR_W = 10  # how hard flights meet at paddle hits / touch the table at bounces; detections weigh 1 per metre
+TABLE_H_M = 0.76  # table top above the floor
 
 
 def flights(tracks, H, fps):
@@ -279,8 +280,9 @@ def flights(tracks, H, fps):
     One camera can't see depth, but between contacts the ball flies a parabola under known gravity, a bounce
     pins it to the table and at a paddle hit the flights before and after meet. Each track's flights are fitted
     together by linear least squares on how far the ball passes from the camera ray through each detection.
-    Left out: flights that don't touch a bounce or meet one that does (serve tosses, pick-ups: nothing fixes
-    their depth), and flights that aren't a parabola (rolling, carried, mis-tracked).
+    Left out (guessed() places those detections): flights that don't touch a bounce or meet one that does
+    (serve tosses, pick-ups: nothing fixes their depth), and flights that aren't a parabola (rolling, carried,
+    a contact the tracker missed) or go through the floor.
     ponytail: no drag or spin, fine at these 4-8 m/s; add drag if fast shots come out too high.
     """
     K, R, t = camera()
@@ -329,8 +331,42 @@ def flights(tracks, H, fps):
             T = (f1 - f0) / fps
             z = [p[2] + v[2] * s + g[2] * s * s / 2 for s in np.linspace(0, T, 10)]
             pinned = bounced[k] or (c0 == "hit" and bounced[k - 1]) or (c1 == "hit" and k + 1 < n and bounced[k + 1])
-            if len(pts) >= 4 and pinned and np.median(miss[owner == k]) < 0.05 and -0.1 < min(z) and max(z) < 3:
+            fits = len(pts) >= 4 and np.median(miss[owner == k]) < 0.05
+            if pinned and fits and -TABLE_H_M - 0.05 < min(z) and max(z) < 3:
                 out.append((f0 / fps, f1 / fps, p, v))
+    return out
+
+
+def guessed(tracks, fl, fps):
+    """Detections no flight covers -> [(t, x, y, z)]: on the camera ray through each, at a guessed depth.
+
+    The depth (distance from the camera) is interpolated in time between the track's flights on either side, so
+    the ball doesn't jump where it leaves or rejoins one; before the first or after the last it holds that
+    flight's depth. In a track with no flight at all the ball goes on the table's centre line, where rallies fly.
+    """
+    K, R, t = camera()
+    C, M = -R.T @ t, R.T @ np.linalg.inv(K)  # camera centre; pixel -> ray direction, table metres
+    g = np.float64([0, 0, -GRAVITY])
+    out = []
+    for tr in tracks:
+        mine = [f for f in fl if tr[0][0] <= (f[0] + f[1]) / 2 * fps <= tr[-1][0]]  # tracks never overlap in time
+        ends = sorted((s, np.linalg.norm(p + v * (s - t0) + g * (s - t0) ** 2 / 2 - C))
+                      for t0, t1, p, v in mine for s in (t0, t1))
+        for f, u, v in tr:
+            s = f / fps
+            if any(t0 <= s <= t1 for t0, t1, *_ in mine):
+                continue
+            d = M @ [u, v, 1]
+            d /= np.linalg.norm(d)
+            if ends:  # np.interp holds the end values outside the flights
+                depth = np.interp(s, [e[0] for e in ends], [e[1] for e in ends])
+            elif d[1] < -0.1:  # ray heads away from the camera across the table's long axis
+                depth = (TABLE_WID_M / 2 - C[1]) / d[1]
+            else:
+                depth = np.linalg.norm(C - (TABLE_LEN_M / 2, TABLE_WID_M / 2, 0))
+            if d[2] < 0:  # not through the floor
+                depth = min(depth, (-TABLE_H_M - C[2]) / d[2])
+            out.append((s, *(C + depth * d)))
     return out
 
 
@@ -505,6 +541,16 @@ def _selfcheck():
     err = [np.linalg.norm(p + v * (f / 30 - t0) + g * (f / 30 - t0) ** 2 / 2 - truth(f / 30))
            for f, *_ in rally for t0, t1, p, v in fl if t0 <= f / 30 <= t1]
     assert len(err) >= 47 and max(err) < 0.05, (len(err), max(err))
+    # Detections no flight covers go on their camera ray: with the middle flight missing, at depths between its
+    # neighbours' (within 8 cm of the truth here); with no flight at all, on the table's centre line.
+    assert guessed([rally], fl, 30) == []
+    gs = guessed([rally], fl[:1] + fl[2:], 30)
+    assert len(gs) >= 10 and max(np.linalg.norm(np.array(xyz) - truth(s)) for s, *xyz in gs) < 0.1, gs
+    for s, *xyz in gs:
+        u, v, w = K @ (R @ np.array(xyz) + t)
+        assert np.allclose((u / w, v / w), rally[round(s * 30)][1:]), (s, u / w, v / w)
+    line = [(f, 500 + 8 * f, 200.0) for f in range(10)]
+    assert np.allclose([y for _, _, y, _ in guessed([line], [], 30)], TABLE_WID_M / 2)
 
 
 if __name__ == "__main__":
