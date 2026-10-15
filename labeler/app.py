@@ -10,10 +10,12 @@ import statistics
 import subprocess
 import sys
 import threading
+from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 from pathlib import Path
 
 import cv2
+import numpy as np
 from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -27,7 +29,8 @@ RUNS = REPO / "runs"
 MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
-from ball_speed import TABLE_LEN_M, TABLE_WID_M  # noqa: E402  x=0 is the table's left end as seen in the video
+from ball_speed import (BOUNCE_DT_S, FIT_TOL_PX, TABLE_LEN_M, TABLE_M, TABLE_PX,  # noqa: E402  x=0 is the table's
+                        TABLE_WID_M, paddle_hits)  # left end as seen in the video
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -171,16 +174,84 @@ def latest_run(run: str) -> Path:
     return max(found, default=(0, d))[1]
 
 
+G = 9.81  # m/s^2
+CENTRE_PX = (640, 360)  # ponytail: optical centre assumed mid-frame of the 1280x720 video TABLE_PX were clicked on
+
+
+def table_camera() -> np.ndarray:
+    """3x4 camera matrix, table metres (x, y, height up) -> video pixels, from the table corners alone: square pixels,
+    optical centre at CENTRE_PX, and the focal length that makes the table's two axes square to each other."""
+    h = cv2.getPerspectiveTransform(TABLE_M, TABLE_PX)  # = K [r1 r2 t] up to scale
+    (a1, b1, c1), (a2, b2, c2) = [(x - CENTRE_PX[0] * z, y - CENTRE_PX[1] * z, z) for x, y, z in h.T[:2]]
+    f = np.sqrt(-(a1 * a2 + b1 * b2) / (c1 * c2))  # r1 . r2 = 0
+    k = np.array([[f, 0, CENTRE_PX[0]], [0, f, CENTRE_PX[1]], [0, 0, 1]])
+    r1, r2, t = (np.linalg.inv(k) @ h).T / np.linalg.norm(np.linalg.inv(k) @ h[:, 0])
+    if t[2] < 0:  # the table is in front of the camera
+        r1, r2, t = -r1, -r2, -t
+    r3 = np.cross(r1, r2)
+    r3 *= -np.sign(r3 @ t)  # height up: the camera is above the table
+    return k @ np.column_stack([r1, r2, r3, t])
+
+
+CAM = table_camera()
+
+
+def flight_in(b: tuple, t_b: float, pts: list) -> list:
+    """Ground track (table metres) of the ball's flight into bounce b at time t_b, at the times of pts [(t, x_px, y_px)].
+    From (b, height 0) at t_b with a constant downward acceleration (gravity, more with topspin, less with backspin):
+    its 3D velocity and that acceleration least-squares fitted to the pixels, dropping the worst-fitting point while it
+    misses by more than FIT_TOL_PX, as ball_speed.robust_fit does. [] when the fit makes no physical sense.
+    ponytail: no drag, which slows real flights a little; add it to the fit if paths look off."""
+    tau, px = np.array([t for t, _, _ in pts]) - t_b, np.array([[x, y] for _, x, y in pts])
+    every = tau
+    while True:
+        # ball at tau: (b, 0) + v tau + (0, 0, az tau^2 / 2). Seen at pixel (x, y): (CAM[0] - x CAM[2]) . ball = 0 and
+        # (CAM[1] - y CAM[2]) . ball = 0 (homogeneous), both linear in v and az
+        q, t = np.r_[CAM[0] - px[:, :1] * CAM[2], CAM[1] - px[:, 1:] * CAM[2]], np.r_[tau, tau][:, None]
+        *v, az = np.linalg.lstsq(np.c_[t * q[:, :3], t ** 2 / 2 * q[:, 2:3]], -(q[:, :2] @ b + q[:, 3]), rcond=None)[0]
+        pos = np.c_[np.tile(b, (len(tau), 1)), az / 2 * tau ** 2] + np.outer(tau, v)
+        seen = np.c_[pos, np.ones(len(tau))] @ CAM.T
+        miss = np.hypot(*(seen[:, :2] / seen[:, 2:] - px).T)
+        if len(tau) <= 4 or miss.max() <= FIT_TOL_PX:
+            if not -3 * G < az < 0:  # spin can add a lot to the fall, not reverse it
+                return []
+            return (np.array(b) + np.outer(every, v[:2])).round(2).tolist()  # dropped points' times too: evenly spaced
+        tau, px = np.delete(tau, miss.argmax()), np.delete(px, miss.argmax(), 0)
+
+
+def bounce_paths(d: Path) -> tuple[list, list, list]:
+    """Each bounce once (table metres), the speed (km/h) of the measured pair ending on it (None if it only starts
+    one), and the ground track of the ball's flight into it, ending on the bounce: fitted to track.csv after the last
+    paddle hit since the pair's first bounce (or BOUNCE_DT_S[1] before, for a bounce that only starts a pair).
+    The ball is in the air, so the table homography alone would push it away from the camera.
+    ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others."""
+    spd, trk = read_csv(d / "speeds.csv") or [], read_csv(d / "track.csv") or []
+    xy = lambda s: tuple(map(float, s.split(",")))
+    win = {xy(r["to_m"]): (float(r["t_s"]), float(r["t_s"]) + float(r["dt_s"])) for r in spd}
+    for r in spd:
+        win.setdefault(xy(r["from_m"]), (float(r["t_s"]) - BOUNCE_DT_S[1], float(r["t_s"])))
+    trk = [(int(r["frame"]), float(r["t_s"]), float(r["x_px"]), float(r["y_px"])) for r in trk]
+    ts = [r[1] for r in trk]  # tracks follow each other in time, so this is sorted
+    bounces, paths = sorted(win), []
+    for b in bounces:
+        t0, t1 = win[b]
+        pts = trk[bisect_left(ts, t0):bisect_right(ts, t1)]
+        hit = max(paddle_hits([(f, x, y) for f, _, x, y in pts]), default=-1)
+        flight = [(t, x, y) for f, t, x, y in pts if f > hit]
+        paths.append((flight_in(b, t1, flight) if len(flight) >= 5 else []) + [list(b)])
+    kmh = {xy(r["to_m"]): float(r["speed_kmh"]) for r in spd}
+    return bounces, paths, [kmh.get(b) for b in bounces]
+
+
 @app.get("/api/runs/{run}")
 def run_info(run: str):
     d = latest_run(run)
     if not d.is_dir():
         raise HTTPException(404, "no such run")
-    # ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others
-    bounces = sorted({tuple(map(float, r[k].split(","))) for r in read_csv(d / "speeds.csv") or []
-                      for k in ("from_m", "to_m")})
+    bounces, paths, kmh = bounce_paths(d)
     return {"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
-            "stats": run_stats(d), "bounces": bounces, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
+            "stats": run_stats(d), "bounces": bounces, "paths": paths, "speeds_kmh": kmh,
+            "table_m": [TABLE_LEN_M, TABLE_WID_M]}
 
 
 @app.get("/api/runs/{run}/{name}")
