@@ -161,23 +161,34 @@ def run_stats(d: Path) -> list[list]:
     return rows
 
 
+def latest_run(run: str) -> Path:
+    """run_dir, but a bare video name means its highest-version run: 1999 -> v6_1999 over v5_1999."""
+    d = run_dir(run)
+    if d.is_dir() or not RUNS.is_dir():
+        return d
+    found = [(int(m[1]), f) for f in RUNS.iterdir()
+             if f.is_dir() and (m := re.fullmatch(rf"v(\d+)_{re.escape(run)}", f.name))]
+    return max(found, default=(0, d))[1]
+
+
 @app.get("/api/runs/{run}")
 def run_info(run: str):
-    d = run_dir(run)
+    d = latest_run(run)
     if not d.is_dir():
         raise HTTPException(404, "no such run")
     # ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others
     bounces = sorted({tuple(map(float, r[k].split(","))) for r in read_csv(d / "speeds.csv") or []
                       for k in ("from_m", "to_m")})
-    return {"name": run, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
+    return {"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
             "stats": run_stats(d), "bounces": bounces, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
 
 
 @app.get("/api/runs/{run}/{name}")
 def run_file(run: str, name: str):
     """One file of a run folder; the run page plays debug.mp4 from here (FileResponse handles Range, so seeking works)."""
-    p = run_dir(run) / name
-    if p.parent != RUNS / run or not p.is_file():  # blocks ../ traversal
+    d = latest_run(run)
+    p = d / name
+    if p.parent != d or not p.is_file():  # blocks ../ traversal
         raise HTTPException(404, "no such file")
     return FileResponse(p, content_disposition_type="inline", filename=name)
 
