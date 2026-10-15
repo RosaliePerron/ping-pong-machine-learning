@@ -111,6 +111,11 @@ r = c.get("/api/runs/v2_my_clip/debug.mp4", headers={"Range": "bytes=0-9"})
 assert r.status_code == 206 and len(r.content) == 10, r
 assert r.headers["content-disposition"].startswith("inline"), r.headers
 assert c.get("/api/runs/v1_my_clip/track.csv").text.startswith("track,frame")
+# a bare video name aliases its highest version: v10 over v2 and v1 (numeric, not text order)
+assert c.get("/api/runs/my_clip").json() == c.get("/api/runs/v10_my_clip").json()
+assert c.get("/api/runs/my_clip").json()["name"] == "v10_my_clip"
+assert c.get("/api/runs/my_clip/debug.mp4").content == c.get("/api/runs/v10_my_clip/debug.mp4").content
+assert c.get("/api/runs/clip").status_code == 404  # suffix of my_clip, not a video name
 for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", "..%2Fmodels/ball_net.pt", "v1_my_clip/%2E"):
     assert c.get(f"/api/runs/{bad}").status_code == 404, bad
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
