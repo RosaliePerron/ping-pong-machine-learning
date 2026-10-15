@@ -379,7 +379,7 @@ async function showRun(name) {
 }
 
 // top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres).
-// Hovering a bounce shows only it and the ball's path into it, where over the table: paths[n] ends on pts[n].
+// Hovering a bounce shows only it and the ball's path into it, over its half of the table: paths[n] ends on pts[n].
 function drawHeatmap(pts, paths, [L, W]) {
   const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 12;  // s: px per metre
   const w = Math.round(L * s), h = Math.round(W * s), sig = 0.08 * s, R = Math.ceil(3 * sig);
@@ -412,7 +412,8 @@ function drawHeatmap(pts, paths, [L, W]) {
       return;
     }
     const path = paths[hit].map(at);
-    g.save(); g.beginPath(); g.rect(pad, pad, w, h); g.clip();  // only while over the table: cut at its edges
+    const half = pts[hit][0] < L / 2 ? 0 : w / 2;  // only over the bounce's side of the net: cut at the net and the edges
+    g.save(); g.beginPath(); g.rect(pad + half, pad, w / 2, h); g.clip();
     g.beginPath(); for (const [x, y] of path) g.lineTo(x, y);
     g.lineJoin = 'round'; g.strokeStyle = g.fillStyle = 'orange'; g.lineWidth = 2; g.stroke();
     for (const [x, y] of path) { g.beginPath(); g.arc(x, y, 2.5, 0, 2 * Math.PI); g.fill(); }  // one per tracked frame: spacing = speed
@@ -428,8 +429,8 @@ function drawHeatmap(pts, paths, [L, W]) {
   c.onpointerleave = e => e.pointerType !== 'touch' && paint(-1);  // a tap leaves at once: keep its path shown
   paint(-1);
   $('bouncecap').textContent = `${pts.length} bounces from measured pairs, seen from above: ` +
-    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s path into it from the bounce before, ' +
-    'where over the table (in the air it shows further from the camera than the ball was).';
+    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s path into it, ' +
+    'over its side of the net (in the air it shows further from the camera than the ball was).';
 }
 
 const route = () => {
