@@ -379,7 +379,8 @@ async function showRun(name) {
 }
 
 // top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres).
-// Hovering a bounce shows only it and the ball's path into it, over its half of the table: paths[n] ends on pts[n].
+// Hovering a bounce shows only it and the ball's flight into it (ground track, fitted in 3D by the server), over its
+// half of the table: paths[n] ends on pts[n].
 function drawHeatmap(pts, paths, [L, W]) {
   const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 12;  // s: px per metre
   const w = Math.round(L * s), h = Math.round(W * s), sig = 0.08 * s, R = Math.ceil(3 * sig);
@@ -429,8 +430,8 @@ function drawHeatmap(pts, paths, [L, W]) {
   c.onpointerleave = e => e.pointerType !== 'touch' && paint(-1);  // a tap leaves at once: keep its path shown
   paint(-1);
   $('bouncecap').textContent = `${pts.length} bounces from measured pairs, seen from above: ` +
-    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s path into it, ' +
-    'over its side of the net (in the air it shows further from the camera than the ball was).';
+    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s flight into it from the paddle hit, ' +
+    'over its side of the net: seen from above, fitted in 3D to the tracked ball, falling under gravity and spin.';
 }
 
 const route = () => {

@@ -161,18 +161,31 @@ assert dict(c.get("/api/runs/v9_stats").json()["stats"]) == {
     "Rejected bounce candidates": "3 (2 bends up, 1 paddle hit)"}
 info = c.get("/api/runs/v9_stats").json()  # each pair's two bounces, shared ones once
 assert info["bounces"] == [[0, 0], [2, 1]] and info["table_m"] == [2.8, 1.3], info
-# heatmap hover: each bounce's path is the track since the pair's first bounce (1.2 s back for a first bounce),
-# through the table homography (these pixels are the table corners), ending on the bounce itself
+# heatmap hover: the camera made from the table corners sees them where they were clicked
+seen = np.array([app_module.CAM @ [x, y, 0, 1] for x, y in app_module.TABLE_M])
+assert np.allclose(seen[:, :2] / seen[:, 2:], app_module.TABLE_PX, atol=0.5), seen
+# the flight into a bounce is fitted in 3D (velocity, and the fall: gravity + spin) to the pixels after the paddle hit,
+# a wild detection dropped; the path is its ground track, a straight line into the bounce, not the homography's curve
+B, v, tb, hit_f = np.array([0.6, 0.7, 0]), np.array([-4, 0.5, -2]), 1.5, 33
+flight = lambda t: B + v * (t - tb) + [0, 0, -14 / 2 * (t - tb) ** 2]  # topspin: falls at 14 m/s^2, not 9.81
+ball = lambda t: flight(t) if t >= hit_f / 30 else flight(hit_f / 30) + np.array([3, -0.5, 1]) * (t - hit_f / 30)
+rows = []  # frames 21-32: from the previous bounce to the hit, going the other way
+for f in range(21, 45):
+    p = app_module.CAM @ [*ball(f / 30), 1]
+    x, y = p[:2] / p[2] + np.array([0, 40]) * (f == 39)  # frame 39: a wild detection
+    rows.append(f"0,{f},{round(f / 30, 3)},{x:.1f},{y:.1f}\n")
 paths_run = os.path.join(repo, "runs", "v9_paths")
 os.makedirs(paths_run)
 with open(os.path.join(paths_run, "speeds.csv"), "w") as fh:
-    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,1,"0.5,0.5","2.5,0.8",2,0.5,10\n')
+    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,0.7,"2.2,0.5","0.6,0.7",1.6,0.8,7.2\n')
 with open(os.path.join(paths_run, "track.csv"), "w") as fh:
-    fh.write("track,frame,t_s,x_px,y_px\n0,0,0,454.5,221.6\n0,15,0.5,965.1,348.8\n0,30,1.0,824.5,494.1\n"
-             "0,45,1.5,248.7,292.9\n1,60,2.0,454.5,221.6\n")
+    fh.write("track,frame,t_s,x_px,y_px\n" + "".join(rows))
 info = c.get("/api/runs/v9_paths").json()
-assert info["bounces"] == [[0.5, 0.5], [2.5, 0.8]], info
-assert info["paths"] == [[[0, 0], [2.8, 0], [2.8, 1.3], [0.5, 0.5]], [[2.8, 1.3], [0, 1.3], [2.5, 0.8]]], info
+assert info["bounces"] == [[0.6, 0.7], [2.2, 0.5]], info
+assert info["paths"][1] == [[2.2, 0.5]], info  # too few points to fit before it: the bounce alone
+path, true = np.array(info["paths"][0]), [B[:2] + v[:2] * (f / 30 - tb) for f in range(hit_f, 46)]
+assert len(path) >= 9 and (path[-1] == B[:2]).all(), path
+assert all(min(np.hypot(*(p - g)) for g in true) < 0.01 for p in path), path  # on the real ground track
 assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
     "Detections": 1, "Frames with a detection": 1, "Tracks": 2, "Tracked frames": 2, "Rallies": 0,
     "Longest rally (bounce pairs)": 0, "Bounce pairs measured": 0, "Rejected bounce candidates": "1 (1 x)"}
