@@ -379,9 +379,9 @@ async function showRun(name) {
 }
 
 // top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres).
-// Hovering a bounce shows only it and the ball's path into it: paths[n] ends on pts[n].
+// Hovering a bounce shows only it and the ball's path into it, where over the table: paths[n] ends on pts[n].
 function drawHeatmap(pts, paths, [L, W]) {
-  const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 160;  // s: px per metre; pad: room for paths off the table
+  const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 12;  // s: px per metre
   const w = Math.round(L * s), h = Math.round(W * s), sig = 0.08 * s, R = Math.ceil(3 * sig);
   c.width = w + 2 * pad; c.height = h + 2 * pad;
   const dens = new Float32Array(w * h);
@@ -412,13 +412,11 @@ function drawHeatmap(pts, paths, [L, W]) {
       return;
     }
     const path = paths[hit].map(at);
-    g.lineJoin = 'round';
-    for (const [colour, width] of [['black', 4], ['orange', 2]]) {  // dark edge: shows on the table and off it, both themes
-      g.beginPath(); for (const [x, y] of path) g.lineTo(x, y);
-      g.strokeStyle = colour; g.lineWidth = width; g.stroke();
-    }
-    g.fillStyle = 'orange';  // one dot per tracked frame: their spacing is the ball's speed
-    for (const [x, y] of path) { g.beginPath(); g.arc(x, y, 2.5, 0, 2 * Math.PI); g.fill(); }
+    g.save(); g.beginPath(); g.rect(pad, pad, w, h); g.clip();  // only while over the table: cut at its edges
+    g.beginPath(); for (const [x, y] of path) g.lineTo(x, y);
+    g.lineJoin = 'round'; g.strokeStyle = g.fillStyle = 'orange'; g.lineWidth = 2; g.stroke();
+    for (const [x, y] of path) { g.beginPath(); g.arc(x, y, 2.5, 0, 2 * Math.PI); g.fill(); }  // one per tracked frame: spacing = speed
+    g.restore();
     g.beginPath(); g.arc(...at(pts[hit]), 7, 0, 2 * Math.PI); g.strokeStyle = 'white'; g.lineWidth = 2; g.stroke();
   };
   c.onpointermove = c.onpointerdown = e => {  // nearest bounce within 8 CSS px; the canvas may be scaled down
@@ -430,8 +428,8 @@ function drawHeatmap(pts, paths, [L, W]) {
   c.onpointerleave = e => e.pointerType !== 'touch' && paint(-1);  // a tap leaves at once: keep its path shown
   paint(-1);
   $('bouncecap').textContent = `${pts.length} bounces from measured pairs, seen from above: ` +
-    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s path into it, ' +
-    'from the bounce before; in the air the path shows further from the camera than the ball was.';
+    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s path into it from the bounce before, ' +
+    'where over the table (in the air it shows further from the camera than the ball was).';
 }
 
 const route = () => {
