@@ -367,7 +367,7 @@ async function showRun(name) {
   }));
   const pts = r?.bounces || [];
   $('bouncefig').classList.toggle('hidden', !pts.length);
-  if (pts.length) drawHeatmap(pts, r.table_m);
+  if (pts.length) drawHeatmap(pts, r.paths, r.table_m);
   if (!r) $('runname').textContent = `${name}: no such run`;
   $('runvideo').classList.toggle('hidden', !vid);
   $('novideo').classList.toggle('hidden', vid || !r);
@@ -378,9 +378,10 @@ async function showRun(name) {
   }));
 }
 
-// top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres)
-function drawHeatmap(pts, [L, W]) {
-  const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 12;  // s: px per metre
+// top-down table, left/right as in the video, camera-side edge at the bottom (ball_speed.py's table metres).
+// Hovering a bounce shows only it and the ball's path into it: paths[n] ends on pts[n].
+function drawHeatmap(pts, paths, [L, W]) {
+  const c = $('heatmap'), g = c.getContext('2d'), s = 200, pad = 160;  // s: px per metre; pad: room for paths off the table
   const w = Math.round(L * s), h = Math.round(W * s), sig = 0.08 * s, R = Math.ceil(3 * sig);
   c.width = w + 2 * pad; c.height = h + 2 * pad;
   const dens = new Float32Array(w * h);
@@ -397,15 +398,40 @@ function drawHeatmap(pts, [L, W]) {
     for (let k = 0; k < 3; k++) img.data[4 * n + k] = table[k] * (1 - a) + heat[k] * a;
     img.data[4 * n + 3] = 255;
   }
-  g.clearRect(0, 0, c.width, c.height);
-  g.putImageData(img, pad, pad);
-  g.strokeStyle = 'white'; g.lineWidth = 2; g.strokeRect(pad + 1, pad + 1, w - 2, h - 2);  // inside the blue: shows in both themes
-  g.beginPath(); g.moveTo(pad + w / 2, pad); g.lineTo(pad + w / 2, pad + h); g.lineWidth = 3; g.stroke();  // net
-  g.beginPath(); g.moveTo(pad, pad + h / 2); g.lineTo(pad + w, pad + h / 2); g.lineWidth = 1; g.stroke();  // centre line
-  g.fillStyle = 'rgba(255,255,255,0.6)';
-  for (const [X, Y] of pts) { g.beginPath(); g.arc(pad + X * s, pad + Y * s, 2, 0, 2 * Math.PI); g.fill(); }
+  const at = ([X, Y]) => [pad + X * s, pad + Y * s];
+  const paint = hit => {  // hit: index of the hovered bounce, -1 for the heatmap
+    g.clearRect(0, 0, c.width, c.height);
+    if (hit < 0) g.putImageData(img, pad, pad);
+    else { g.fillStyle = `rgb(${table})`; g.fillRect(pad, pad, w, h); }
+    g.strokeStyle = 'white'; g.lineWidth = 2; g.strokeRect(pad + 1, pad + 1, w - 2, h - 2);  // inside the blue: shows in both themes
+    g.beginPath(); g.moveTo(pad + w / 2, pad); g.lineTo(pad + w / 2, pad + h); g.lineWidth = 3; g.stroke();  // net
+    g.beginPath(); g.moveTo(pad, pad + h / 2); g.lineTo(pad + w, pad + h / 2); g.lineWidth = 1; g.stroke();  // centre line
+    if (hit < 0) {
+      g.fillStyle = 'rgba(255,255,255,0.6)';
+      for (const p of pts) { g.beginPath(); g.arc(...at(p), 2, 0, 2 * Math.PI); g.fill(); }
+      return;
+    }
+    const path = paths[hit].map(at);
+    g.lineJoin = 'round';
+    for (const [colour, width] of [['black', 4], ['orange', 2]]) {  // dark edge: shows on the table and off it, both themes
+      g.beginPath(); for (const [x, y] of path) g.lineTo(x, y);
+      g.strokeStyle = colour; g.lineWidth = width; g.stroke();
+    }
+    g.fillStyle = 'orange';  // one dot per tracked frame: their spacing is the ball's speed
+    for (const [x, y] of path) { g.beginPath(); g.arc(x, y, 2.5, 0, 2 * Math.PI); g.fill(); }
+    g.beginPath(); g.arc(...at(pts[hit]), 7, 0, 2 * Math.PI); g.strokeStyle = 'white'; g.lineWidth = 2; g.stroke();
+  };
+  c.onpointermove = c.onpointerdown = e => {  // nearest bounce within 8 CSS px; the canvas may be scaled down
+    const r = c.getBoundingClientRect(), k = c.width / r.width, mx = (e.clientX - r.left) * k, my = (e.clientY - r.top) * k;
+    let hit = -1, best = (8 * k) ** 2;
+    pts.forEach((p, n) => { const [x, y] = at(p), d = (x - mx) ** 2 + (y - my) ** 2; if (d < best) [best, hit] = [d, n]; });
+    paint(hit);
+  };
+  c.onpointerleave = e => e.pointerType !== 'touch' && paint(-1);  // a tap leaves at once: keep its path shown
+  paint(-1);
   $('bouncecap').textContent = `${pts.length} bounces from measured pairs, seen from above: ` +
-    'left and right as in the video, camera side at the bottom.';
+    'left and right as in the video, camera side at the bottom. Hover a bounce for the ball\'s path into it, ' +
+    'from the bounce before; in the air the path shows further from the camera than the ball was.';
 }
 
 const route = () => {

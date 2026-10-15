@@ -10,10 +10,12 @@ import statistics
 import subprocess
 import sys
 import threading
+from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 from pathlib import Path
 
 import cv2
+import numpy as np
 from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -27,7 +29,8 @@ RUNS = REPO / "runs"
 MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
-from ball_speed import TABLE_LEN_M, TABLE_WID_M  # noqa: E402  x=0 is the table's left end as seen in the video
+from ball_speed import BOUNCE_DT_S, TABLE_LEN_M, TABLE_M, TABLE_PX, TABLE_WID_M  # noqa: E402  x=0 is the table's left end as seen in the video
+TABLE_H = cv2.getPerspectiveTransform(TABLE_PX, TABLE_M)  # video pixels -> table metres, as in ball_speed.py
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -171,16 +174,31 @@ def latest_run(run: str) -> Path:
     return max(found, default=(0, d))[1]
 
 
+def bounce_paths(d: Path) -> tuple[list, list]:
+    """Each bounce once (table metres), and the ball's path into it: track.csv from the pair's first bounce, or
+    BOUNCE_DT_S[1] before for a bounce that only starts a pair, through H onto the table plane, ending on the bounce.
+    ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others.
+    ponytail: H is only right on the table, so a ball in the air lands further from the camera; needs 3D to fix."""
+    spd, trk = read_csv(d / "speeds.csv") or [], read_csv(d / "track.csv") or []
+    xy = lambda s: tuple(map(float, s.split(",")))
+    win = {xy(r["to_m"]): (float(r["t_s"]), float(r["t_s"]) + float(r["dt_s"])) for r in spd}
+    for r in spd:
+        win.setdefault(xy(r["from_m"]), (float(r["t_s"]) - BOUNCE_DT_S[1], float(r["t_s"])))
+    ts = [float(r["t_s"]) for r in trk]  # tracks follow each other in time, so this is sorted
+    m = cv2.perspectiveTransform(np.float32([[[float(r["x_px"]), float(r["y_px"])] for r in trk]]),
+                                 TABLE_H)[0].astype(float).round(2).tolist() if trk else []
+    bounces = sorted(win)
+    return bounces, [m[bisect_left(ts, win[b][0]):bisect_right(ts, win[b][1])] + [list(b)] for b in bounces]
+
+
 @app.get("/api/runs/{run}")
 def run_info(run: str):
     d = latest_run(run)
     if not d.is_dir():
         raise HTTPException(404, "no such run")
-    # ponytail: only bounces that made a measured pair; ball_speed.py doesn't save the others
-    bounces = sorted({tuple(map(float, r[k].split(","))) for r in read_csv(d / "speeds.csv") or []
-                      for k in ("from_m", "to_m")})
+    bounces, paths = bounce_paths(d)
     return {"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
-            "stats": run_stats(d), "bounces": bounces, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
+            "stats": run_stats(d), "bounces": bounces, "paths": paths, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
 
 
 @app.get("/api/runs/{run}/{name}")

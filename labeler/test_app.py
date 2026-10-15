@@ -161,6 +161,18 @@ assert dict(c.get("/api/runs/v9_stats").json()["stats"]) == {
     "Rejected bounce candidates": "3 (2 bends up, 1 paddle hit)"}
 info = c.get("/api/runs/v9_stats").json()  # each pair's two bounces, shared ones once
 assert info["bounces"] == [[0, 0], [2, 1]] and info["table_m"] == [2.8, 1.3], info
+# heatmap hover: each bounce's path is the track since the pair's first bounce (1.2 s back for a first bounce),
+# through the table homography (these pixels are the table corners), ending on the bounce itself
+paths_run = os.path.join(repo, "runs", "v9_paths")
+os.makedirs(paths_run)
+with open(os.path.join(paths_run, "speeds.csv"), "w") as fh:
+    fh.write('track,t_s,from_m,to_m,dist_m,dt_s,speed_kmh\n0,1,"0.5,0.5","2.5,0.8",2,0.5,10\n')
+with open(os.path.join(paths_run, "track.csv"), "w") as fh:
+    fh.write("track,frame,t_s,x_px,y_px\n0,0,0,454.5,221.6\n0,15,0.5,965.1,348.8\n0,30,1.0,824.5,494.1\n"
+             "0,45,1.5,248.7,292.9\n1,60,2.0,454.5,221.6\n")
+info = c.get("/api/runs/v9_paths").json()
+assert info["bounces"] == [[0.5, 0.5], [2.5, 0.8]], info
+assert info["paths"] == [[[0, 0], [2.8, 0], [2.8, 1.3], [0.5, 0.5]], [[2.8, 1.3], [0, 1.3], [2.5, 0.8]]], info
 assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
     "Detections": 1, "Frames with a detection": 1, "Tracks": 2, "Tracked frames": 2, "Rallies": 0,
     "Longest rally (bounce pairs)": 0, "Bounce pairs measured": 0, "Rejected bounce candidates": "1 (1 x)"}
