@@ -167,6 +167,14 @@ assert dict(c.get("/api/runs/v1_my_clip").json()["stats"]) == {
 assert c.get("/api/runs/nope").status_code == 404
 assert c.get("/api/runs/..").status_code == 404
 
+# 3D view: ball_speed.flights() on track.csv (its self-check tests the fit) and the camera it was filmed from
+assert c.get("/api/runs/v1_my_clip/3d").status_code == 404  # t_s all 0: no frame rate
+with open(os.path.join(stats_run, "track.csv"), "w") as fh:  # one straight flight, no bounce to pin its depth
+    fh.write("track,frame,t_s,x_px,y_px\n" + "".join(f"0,{f},{f / 30:.3f},{600 + 5 * f},300\n" for f in range(10)))
+d = c.get("/api/runs/v9_stats/3d").json()
+assert d["flights"] == [] and d["camera"]["pos"][2] > 1 and 30 < d["camera"]["fov_deg"] < 50, d
+assert c.get("/api/runs/stats/3d").json() == d  # a bare name aliases the highest version, as on the other run routes
+
 # training: stand-in train_ball.py prints epochs, checks it got the database's labels, writes a new ball_net.pt
 with open(os.path.join(repo, "train_ball.py"), "w") as fh:
     fh.write("assert open('labels.csv').read().splitlines()[1] == 'videos/my_clip.mp4,3,0,,'\n"

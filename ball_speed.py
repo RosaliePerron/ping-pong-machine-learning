@@ -170,6 +170,29 @@ def on_table(X, Y):
     return 0 <= X <= TABLE_LEN_M and 0 <= Y <= TABLE_WID_M and abs(X - TABLE_LEN_M / 2) > 0.2
 
 
+def paddle_hits(tr):
+    """Frames where screen x velocity reverses, judged on 3-step medians so one wild point can't fake it.
+    One hit flips it on 2-3 neighbouring frames."""
+    vx = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(tr, tr[1:])]
+    return [tr[j][0] for j in range(3, len(tr) - 3) if np.median(vx[j - 3 : j]) * np.median(vx[j : j + 3]) < 0]
+
+
+def hit_times(tr):
+    """Paddle hits, one per hit, timed between frames where the image paths before and after it meet."""
+    raw = paddle_hits(tr)
+    out = []
+    for h in [grp.mean() for grp in np.split(np.float64(raw), np.flatnonzero(np.diff(raw) > 3) + 1) if len(grp)]:
+        before = [p for p in tr if h - FIT_WINDOW <= p[0] < h]
+        after = [p for p in tr if h < p[0] <= h + FIT_WINDOW]
+        fa = robust_fit(before) if len(before) >= 3 else None
+        fb = robust_fit(after) if len(after) >= 3 else None
+        if fa is not None and fb is not None:
+            h = min(np.linspace(h - 1.5, h + 1.5, 61), key=lambda s: np.hypot(
+                np.polyval(fa[0], s) - np.polyval(fb[0], s), np.polyval(fa[1], s) - np.polyval(fb[1], s)))
+        out.append(h)
+    return out
+
+
 def bounces(tr, H, rejected=None):
     """Bounces in one track -> [(frame, X, Y)] in table metres; frame is fractional when refined.
 
@@ -187,10 +210,8 @@ def bounces(tr, H, rejected=None):
     # Off-table candidates are dropped anyway; labelling them only clutters the debug video.
     reject = ((lambda why: on_table(*to_table(H, x, y)) and rejected.append((f, x, y, why)))
               if rejected is not None else (lambda why: None))
-    # Paddle hits (screen x velocity reverses, judged on 3-step medians so one wild point can't fake it):
-    # fit windows stop at them, or a hit ~0.1-0.2 s after the bounce bends the "after" parabola upward.
-    vx = [(b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(tr, tr[1:])]
-    hits = [tr[j][0] for j in range(3, len(tr) - 3) if np.median(vx[j - 3 : j]) * np.median(vx[j : j + 3]) < 0]
+    # Fit windows stop at paddle hits, or a hit ~0.1-0.2 s after the bounce bends the "after" parabola upward.
+    hits = paddle_hits(tr)
     for i in range(1, len(tr) - 1):
         (f0, _, y0), (f, x, y), (f2, _, y2) = tr[i - 1], tr[i], tr[i + 1]
         if not (f - f0 == 1 and f2 - f == 1 and y2 - 2 * y + y0 < -KINK_PX):
@@ -227,6 +248,89 @@ def bounces(tr, H, rejected=None):
         X, Y = to_table(H, (np.polyval(xa, t) + np.polyval(xb, t)) / 2, (np.polyval(ya, t) + np.polyval(yb, t)) / 2)
         if on_table(X, Y):
             out.append((t, X, Y))
+    return out
+
+
+def camera():
+    """(K, R, t) of the camera, world = table metres with z up.
+
+    Assumes the principal point at the centre of the 1280x720 frame TABLE_PX was clicked on, square pixels and
+    no lens distortion, so the focal length is the only unknown intrinsic: 4 corners, 8 equations, 7 unknowns.
+    ponytail: 1.5 px of click error moves it ~35 px (camera ~10 cm); click the net post tops too if 3D looks off.
+    """
+    flags = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_PRINCIPAL_POINT | cv2.CALIB_FIX_ASPECT_RATIO
+             | cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3)
+    guess = np.float64([[1000, 0, 640], [0, 1000, 360], [0, 0, 1]])
+    obj = np.float32([[X, Y, 0] for X, Y in TABLE_M])
+    _, K, _, (rv,), (tv,) = cv2.calibrateCamera([obj], [TABLE_PX], (1280, 720), guess, None, flags=flags)
+    R, t = cv2.Rodrigues(rv)[0], tv.ravel()
+    if (-R.T @ t)[2] < 0:  # the corners don't say which side is up; the camera is above the table
+        R[:, 2] *= -1
+    return K, R, t
+
+
+GRAVITY = 9.81  # m/s^2
+JOIN_W = ANCHOR_W = 10  # how hard flights meet at paddle hits / touch the table at bounces; detections weigh 1 per metre
+
+
+def flights(tracks, H, fps):
+    """The ball in 3D -> [(t0, t1, p, v)]: from t0 to t1 s it is at p + v (t - t0) + gravity, table metres, z up.
+
+    One camera can't see depth, but between contacts the ball flies a parabola under known gravity, a bounce
+    pins it to the table and at a paddle hit the flights before and after meet. Each track's flights are fitted
+    together by linear least squares on how far the ball passes from the camera ray through each detection.
+    Left out: flights that don't touch a bounce or meet one that does (serve tosses, pick-ups: nothing fixes
+    their depth), and flights that aren't a parabola (rolling, carried, mis-tracked).
+    ponytail: no drag or spin, fine at these 4-8 m/s; add drag if fast shots come out too high.
+    """
+    K, R, t = camera()
+    P, Kinv = np.hstack([R, t[:, None]]), np.linalg.inv(K)  # normalised: ray misses come out in metres at the ball
+    g = np.float64([0, 0, -GRAVITY])
+    out = []
+    for tr in tracks:
+        edges = sorted([(f, (X, Y)) for f, X, Y in bounces(tr, H)] + [(h, "hit") for h in hit_times(tr)],
+                       key=lambda e: e[0])
+        edges = [(tr[0][0] - 0.5, None)] + edges + [(tr[-1][0] + 0.5, None)]
+        segs = [(e0, e1, [p for p in tr if e0[0] < p[0] < e1[0]]) for e0, e1 in zip(edges, edges[1:])]
+        n, rows, rhs, owner = len(segs), [], [], []
+
+        def eq(coefs, val, w, k=None):  # coefs: {flight: 6 coefficients on (p, v)}
+            r = np.zeros(6 * n)
+            for j, c in coefs.items():
+                r[6 * j : 6 * j + 6] = c
+            rows.append(w * r)
+            rhs.append(w * val)
+            owner.append(k)
+
+        for k, ((f0, c0), (f1, c1), pts) in enumerate(segs):
+            if len(pts) < 4:
+                continue
+            for f, u, v in pts:
+                tau = (f - f0) / fps
+                xn, yn, _ = Kinv @ [u, v, 1]
+                for a in (P[0] - xn * P[2], P[1] - yn * P[2]):  # a . (x, y, z, 1) = 0 on the ray
+                    eq({k: np.r_[a[:3], a[:3] * tau]}, -a[3] - a[:3] @ g * tau * tau / 2, 1, k)
+            T = (f1 - f0) / fps
+            for c, tau in ((c0, 0), (c1, T)):
+                if isinstance(c, tuple):
+                    for i, want in enumerate((*c, 0)):
+                        eq({k: np.eye(6)[i] + tau * np.eye(6)[3 + i]}, want - g[i] * tau * tau / 2, ANCHOR_W)
+            if c1 == "hit" and k + 1 < n and len(segs[k + 1][2]) >= 4:
+                for i in range(3):
+                    eq({k: np.eye(6)[i] + T * np.eye(6)[3 + i], k + 1: -np.eye(6)[i]}, -g[i] * T * T / 2, JOIN_W)
+        if not rows:
+            continue
+        A, b = np.array(rows), np.array(rhs)
+        sol = np.linalg.lstsq(A, b, rcond=None)[0]
+        miss, owner = np.abs(A @ sol - b), np.array(owner, dtype=object)
+        bounced = [len(pts) >= 4 and (isinstance(c0, tuple) or isinstance(c1, tuple)) for (_, c0), (_, c1), pts in segs]
+        for k, ((f0, c0), (f1, c1), pts) in enumerate(segs):
+            p, v = sol[6 * k : 6 * k + 3], sol[6 * k + 3 : 6 * k + 6]
+            T = (f1 - f0) / fps
+            z = [p[2] + v[2] * s + g[2] * s * s / 2 for s in np.linspace(0, T, 10)]
+            pinned = bounced[k] or (c0 == "hit" and bounced[k - 1]) or (c1 == "hit" and k + 1 < n and bounced[k + 1])
+            if len(pts) >= 4 and pinned and np.median(miss[owner == k]) < 0.05 and -0.1 < min(z) and max(z) < 3:
+                out.append((f0 / fps, f1 / fps, p, v))
     return out
 
 
@@ -381,6 +485,26 @@ def _selfcheck():
     # Homography maps corners to metres.
     H = cv2.getPerspectiveTransform(TABLE_PX, TABLE_M)
     assert np.allclose(cv2.perspectiveTransform(TABLE_PX[None], H)[0], TABLE_M, atol=1e-3)
+    # A rally filmed by camera(): bounce on the left half, the left player's hit, bounce on the right half.
+    # flights() gets the 3D path back from the pixels alone.
+    K, R, t = camera()
+    assert (-R.T @ t)[2] > 1, "camera above the table"
+    g = np.float64([0, 0, -GRAVITY])
+    fly = lambda p, v, t0: lambda s: np.float64(p) + np.float64(v) * (s - t0) + g * (s - t0) ** 2 / 2
+    after1 = fly([0.8, 0.5, 0], [-4, 0.1, 2.9], 0.5)
+    back = fly(after1(0.85), [5, 0.1, 1.5], 0.85)
+    tb = 0.85 + (1.5 + np.sqrt(1.5 ** 2 + 2 * GRAVITY * after1(0.85)[2])) / GRAVITY  # lands at x ~1.8
+    legs = [(0, fly([0.8, 0.5, 0], [-5, -0.2, -3.2], 0.5)), (0.5, after1), (0.85, back), (tb, fly(back(tb), [4, 0.1, 2.8], tb))]
+    truth = lambda s: [leg for t0, leg in legs if t0 <= s][-1](s)
+    rally = []
+    for f in range(48):
+        u, v, w = K @ (R @ truth(f / 30) + t)
+        rally.append((f, u / w, v / w))
+    fl = flights([rally], H, 30)
+    assert len(fl) == 4, fl
+    err = [np.linalg.norm(p + v * (f / 30 - t0) + g * (f / 30 - t0) ** 2 / 2 - truth(f / 30))
+           for f, *_ in rally for t0, t1, p, v in fl if t0 <= f / 30 <= t1]
+    assert len(err) >= 47 and max(err) < 0.05, (len(err), max(err))
 
 
 if __name__ == "__main__":

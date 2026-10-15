@@ -21,6 +21,9 @@
   #prev { color: cyan; font: 24px monospace; line-height: 1; }
   #guess { width: 40px; height: 40px; border: 2px solid yellow; border-radius: 50%; }
   #runvideo { display: block; max-width: 100%; max-height: 80vh; }
+  #playback { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  #runvideo, #fig3d { flex: 1 1 480px; min-width: 0; margin: 0; }
+  #view3d { display: block; width: 100%; aspect-ratio: 16 / 9; }
   #status { font-variant-numeric: tabular-nums; }
   .hidden { display: none; }
   kbd { border: 1px solid; border-radius: 3px; padding: 0 4px; }
@@ -92,7 +95,13 @@
     <canvas id="heatmap" style="max-width: 100%"></canvas>
     <figcaption id="bouncecap"></figcaption>
   </figure>
-  <video id="runvideo" controls preload="metadata"></video>
+  <div id="playback">
+    <video id="runvideo" controls preload="metadata"></video>
+    <figure id="fig3d" class="hidden">
+      <canvas id="view3d"></canvas>
+      <figcaption id="cap3d"></figcaption>
+    </figure>
+  </div>
   <p id="novideo" class="hidden">No debug video in this run. Make one under <a href="#">Debug video</a>.</p>
   <h3>Files</h3>
   <ul id="runfiles"></ul>
@@ -357,6 +366,7 @@ async function showRuns() {
 
 async function showRun(name) {
   showSection('run');
+  window.run3d = name;  // the 3D view below follows it
   $('runname').textContent = name;
   $('runstats').replaceChildren();
   const r = await api(`/api/runs/${encodeURIComponent(name)}`).catch(() => null);
@@ -418,6 +428,98 @@ const route = () => {
 };
 addEventListener('hashchange', route);
 route();
+</script>
+<script type="importmap">{"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+// ---- the ball in 3D (ball_speed.flights), in step with the debug video ----
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id), video = $('runvideo'), G = 9.81;
+const renderer = new THREE.WebGLRenderer({ canvas: $('view3d'), antialias: true });
+const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(40, 16 / 9, 0.05, 100);
+const controls = new OrbitControls(cam, $('view3d'));
+renderer.setPixelRatio(devicePixelRatio);
+scene.background = new THREE.Color(0x1d2125);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 3));
+// table metres (x along the table, y towards the camera, z up) -> three.js (x right, y up, z towards the viewer)
+const v3 = (x, y, z) => new THREE.Vector3(x, z, y);
+const mesh = (geo, mat, at) => { const m = new THREE.Mesh(geo, mat); m.position.copy(at); scene.add(m); return m; };
+const ball = mesh(new THREE.SphereGeometry(0.025), new THREE.MeshStandardMaterial({ color: 0xff8c1a, emissive: 0x803000 }), v3(0, 0, 0));
+const shadow = mesh(new THREE.CircleGeometry(0.025), new THREE.MeshBasicMaterial({ color: 0, transparent: true, opacity: 0.5 }), v3(0, 0, 0));
+shadow.rotation.x = -Math.PI / 2;
+const TRAIL = 20, trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffb060 }));
+trail.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * TRAIL), 3));
+scene.add(trail);
+let flights = [], shown, data, clock0 = performance.now();
+
+function buildTable([L, W]) {
+  mesh(new THREE.BoxGeometry(L, 0.03, W), new THREE.MeshStandardMaterial({ color: 0x1b4f8a }), v3(L / 2, W / 2, -0.015));
+  const lines = [[0, 0, L, 0], [L, 0, L, W], [L, W, 0, W], [0, W, 0, 0], [0, W / 2, L, W / 2]]
+    .flatMap(([x0, y0, x1, y1]) => [v3(x0, y0, 0.001), v3(x1, y1, 0.001)]);
+  scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lines), new THREE.LineBasicMaterial({ color: 0xffffff })));
+  const net = mesh(new THREE.PlaneGeometry(W + 0.3, 0.1525), new THREE.MeshBasicMaterial(
+    { color: 0xffffff, transparent: true, opacity: 0.4, side: THREE.DoubleSide }), v3(L / 2, W / 2, 0.076));
+  net.rotation.y = Math.PI / 2;
+  const floor = new THREE.GridHelper(12, 24, 0x555555, 0x333333);
+  floor.position.copy(v3(L / 2, W / 2, -0.76));  // tables are 76 cm high
+  scene.add(floor);
+}
+
+function cameraView() {  // where the video was filmed from; double-click to come back here
+  const { pos, look, fov_deg } = data.camera, [L, W] = data.table_m, axis = v3(...look), mid = v3(L / 2, W / 2, 0);
+  cam.fov = fov_deg; cam.position.copy(v3(...pos)); cam.updateProjectionMatrix();
+  controls.target.copy(cam.position).addScaledVector(axis, axis.dot(mid.sub(cam.position)));
+  controls.update();
+}
+$('view3d').ondblclick = () => data && cameraView();
+
+async function load(name) {
+  shown = name; flights = [];
+  $('fig3d').classList.add('hidden');
+  const r = await fetch(`/api/runs/${encodeURIComponent(name)}/3d`).catch(() => null);
+  if (!r?.ok || shown !== name) return;
+  const first = !data;
+  data = await r.json();
+  if (first) buildTable(data.table_m);
+  if (shown !== name || !data.flights.length) return;
+  flights = data.flights;
+  cameraView();
+  $('cap3d').textContent = `The ball in 3D, ${video.hasAttribute('src') ? 'in step with the video' : 'on its own clock (no debug video)'}: ` +
+    `${flights.length} flights between bounces and paddle hits, fitted as gravity arcs and pinned to the table at the bounces. ` +
+    "Drag to orbit, scroll to zoom, double-click for the video camera's view.";
+  $('fig3d').classList.remove('hidden');
+}
+
+function at(t) {  // flight [t0, t1, x, y, z, vx, vy, vz]: at t0 + s the ball is at x + vx s, y + vy s, z + vz s - g s^2 / 2
+  const f = flights.find(f => f[0] <= t && t <= f[1]);
+  if (!f) return null;
+  const s = t - f[0];
+  return v3(f[2] + f[5] * s, f[3] + f[6] * s, f[4] + f[7] * s - G / 2 * s * s);
+}
+
+renderer.setAnimationLoop(() => {
+  if (window.run3d && window.run3d !== shown) load(window.run3d);
+  if ($('fig3d').classList.contains('hidden') || $('run').classList.contains('hidden')) return;
+  const c = renderer.domElement;
+  if (c.width !== Math.floor(c.clientWidth * renderer.getPixelRatio())) renderer.setSize(c.clientWidth, c.clientHeight, false);
+  const end = flights[flights.length - 1][1];
+  const t = video.hasAttribute('src') ? video.currentTime : (performance.now() - clock0) / 1000 % end;
+  const p = at(t), [L, W] = data.table_m;
+  ball.visible = shadow.visible = trail.visible = !!p;
+  if (p) {
+    ball.position.copy(p);
+    const overTable = p.x >= 0 && p.x <= L && p.z >= 0 && p.z <= W && p.y >= 0;
+    shadow.position.set(p.x, overTable ? 0.002 : -0.758, p.z);
+    const pts = [...Array(TRAIL).keys()].map(k => at(t - k / 60)).filter(Boolean), buf = trail.geometry.attributes.position;
+    pts.forEach((q, k) => buf.setXYZ(k, q.x, q.y, q.z));
+    buf.needsUpdate = true;
+    trail.geometry.setDrawRange(0, pts.length);
+  }
+  controls.update();
+  renderer.render(scene, cam);
+});
 </script>
 </body>
 </html>

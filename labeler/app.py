@@ -14,6 +14,7 @@ from collections import Counter, deque
 from pathlib import Path
 
 import cv2
+import numpy as np
 from fastapi import FastAPI, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -28,6 +29,7 @@ MODELS = REPO / "models"
 sys.path.insert(0, str(REPO))
 import label_ball  # noqa: E402  the CLI's own frame pickers, so web and CLI choose the same frames
 from ball_speed import TABLE_LEN_M, TABLE_WID_M  # noqa: E402  x=0 is the table's left end as seen in the video
+from ball_speed import TABLE_M, TABLE_PX, camera, flights, load_tracks  # noqa: E402
 
 db = sqlite3.connect(DATA / "labels.db", check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
@@ -181,6 +183,22 @@ def run_info(run: str):
                       for k in ("from_m", "to_m")})
     return {"name": d.name, "modes": run_modes(d), "files": sorted(f.name for f in d.iterdir() if f.is_file()),
             "stats": run_stats(d), "bounces": bounces, "table_m": [TABLE_LEN_M, TABLE_WID_M]}
+
+
+@app.get("/api/runs/{run}/3d")
+def run_3d(run: str):
+    """The ball in 3D for the run page: ball_speed.flights() on track.csv, and the camera it was filmed from.
+    ponytail: refitted per request (~1.5 s for a 5-minute video); cache on track.csv's mtime if that drags."""
+    path = latest_run(run) / "track.csv"
+    frame, t_s = max(((int(r["frame"]), float(r["t_s"])) for r in read_csv(path) or []), default=(0, 0))
+    if not t_s:
+        raise HTTPException(404, "no track.csv with timestamps in this run")
+    fl = flights(load_tracks(path), cv2.getPerspectiveTransform(TABLE_PX, TABLE_M), frame / t_s)  # t_s = frame / fps
+    K, R, t = camera()
+    return {"flights": [[round(t0, 3), round(t1, 3), *np.round(np.r_[p, v], 3).tolist()] for t0, t1, p, v in fl],
+            "camera": {"pos": (-R.T @ t).round(3).tolist(), "look": R[2].round(4).tolist(),  # optical axis
+                       "fov_deg": round(float(np.degrees(2 * np.arctan(K[1, 2] / K[1, 1]))), 2)},  # vertical
+            "table_m": [TABLE_LEN_M, TABLE_WID_M]}
 
 
 @app.get("/api/runs/{run}/{name}")
