@@ -32,7 +32,7 @@ w.release()
 
 c = TestClient(app)
 with open(src, "rb") as fh:
-    assert c.post("/api/videos", files={"file": ("my clip.mp4", fh)}).json() == {"name": "my_clip.mp4"}
+    assert c.post("/api/videos", files={"file": ("my clip.mp4", fh)}).json() == {"name": "my_clip.mp4", "run": None}
 assert c.post("/api/videos", files={"file": ("x.txt", b"hi")}).status_code == 400
 assert 'type="file"' not in c.get("/").text  # upload is API only: no form on the page
 assert c.get("/api/videos").json() == {
@@ -106,6 +106,14 @@ assert r.headers["content-disposition"] == 'attachment; filename="v2_my_clip.mp4
 assert cv2.VideoCapture(os.path.join(repo, "runs", "v2_my_clip", "debug.mp4")).get(cv2.CAP_PROP_FRAME_COUNT) == 10
 assert not os.path.exists(os.path.join(repo, "runs", "v2_my_clip", "dbg.mp4"))
 assert c.get("/api/debug/v1_my_clip/debug.mp4").status_code == 404
+with open(src, "rb") as fh:  # an upload starts a debug run with the latest model
+    assert c.post("/api/videos", files={"file": ("new.mp4", fh)}).json() == {"name": "new.mp4", "run": "v10_new"}
+for _ in range(100):
+    if (job := c.get("/api/debug/v10_new").json())["state"] != "running":
+        break
+    time.sleep(0.1)
+assert job["state"] == "done", job
+assert os.path.isfile(os.path.join(repo, "runs", "v10_new", "debug.mp4"))
 # run page: plays debug.mp4 inline, seekable
 r = c.get("/api/runs/v2_my_clip/debug.mp4", headers={"Range": "bytes=0-9"})
 assert r.status_code == 206 and len(r.content) == 10, r
@@ -116,6 +124,9 @@ for bad in ("v1_my_clip/nope.csv", "v1_my_clip/..%2F..%2Fmodels%2Fball_net.pt", 
 assert c.get("/api/debug/..%2F..%2Fetc").status_code == 404
 with app_module.train_lock:  # as if a training were running
     assert c.post("/api/debug", json={"video": "my_clip.mp4", "version": 2}).status_code == 409
+    with open(src, "rb") as fh:  # upload still works, without a debug run
+        assert c.post("/api/videos", files={"file": ("mid_training.mp4", fh)}).json() == {"name": "mid_training.mp4", "run": None}
+assert "v10_mid_training" not in c.get("/api/debug").json()
 
 # cancel: a stand-in ball_speed.py that never finishes gets killed
 with open(os.path.join(repo, "ball_speed.py"), "w") as fh:

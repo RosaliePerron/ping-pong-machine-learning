@@ -75,7 +75,13 @@ def upload(file: UploadFile):
     if frame_count(dest) <= 0:
         dest.unlink()
         raise HTTPException(400, "could not read video")
-    return {"name": name}
+    # debug run with the latest saved model, polled like POST /api/debug; no run without a saved model
+    versions = list_models()
+    try:
+        run = start_debug(DebugJob(video=name, version=max(versions)))["run"] if versions else None
+    except HTTPException:  # 409 while a training runs (as in the UI): the upload itself still succeeded
+        run = None
+    return {"name": name, "run": run}
 
 @app.get("/api/videos/{name}/frames/{frame}.jpg")
 def frame_jpg(name: str, frame: int):

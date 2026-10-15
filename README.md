@@ -48,7 +48,7 @@ This runs `videos/1948.mp4` through `models/ball_net_v3.pt` and writes everythin
 - `debug.mp4`: annotated video (re-encoded to H.264 so VLC can play it). Needs `ffmpeg`.
 - `track.csv`, `speeds.csv`, `detections.csv`, `rejected.csv`: the run's data. The labelling modes below read these files.
 
-The web labeller does the same under **Debug video**: choose the video and model version, wait for the progress bar, then click **Download debug.mp4**. It runs on the GPU in the container. It writes to the same `runs/v3_1948/` folder, owned by root.
+The web labeller does the same under **Debug video**: choose the video and model version, wait for the progress bar, then click **Download debug.mp4**. It runs on the GPU in the container. It writes to the same `runs/v3_1948/` folder, owned by root. A video uploaded through the API (`POST /api/videos`) gets a debug video with the latest model version straight away; the response names its run (`null` while a training runs or before any model is saved).
 
 Every run folder has its own page under **Runs** in the web labeller (`/#/runs`), which plays its `debug.mp4` in the browser and links to its CSV files.
 
